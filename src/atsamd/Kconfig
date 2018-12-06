@@ -12,6 +12,7 @@ config ATSAMD_SELECT
     select HAVE_GPIO_HARD_PWM if MACH_SAMD21
     select HAVE_GPIO_BITBANGING
     select HAVE_CHIPID
+    select HAVE_SERVO_STEPPER
 
 config BOARD_DIRECTORY
     string
