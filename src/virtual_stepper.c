@@ -97,6 +97,21 @@ virtual_stepper_oid_lookup(uint8_t oid)
     return oid_lookup(oid, command_config_virtual_stepper);
 }
 
+// Check if the given oid is a virtual stepper
+uint8_t
+virtual_stepper_oid_verify(uint8_t oid)
+{
+    return oid_verify(oid, command_config_virtual_stepper);
+}
+
+// Check if the given 'stepper *' is a virtual stepper
+uint8_t
+virtual_stepper_verify(void *stepper)
+{
+    struct virtual_stepper *s = stepper;
+    return s->time.func == virtual_stepper_event;
+}
+
 // Schedule a set of steps with a given timing
 void
 command_virtual_queue_step(uint32_t *args)

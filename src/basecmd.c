@@ -146,10 +146,16 @@ struct oid_s {
 static struct oid_s *oids;
 static uint8_t oid_count;
 
+uint8_t
+oid_verify(uint8_t oid, void *type)
+{
+    return oid < oid_count && type == oids[oid].type;
+}
+
 void *
 oid_lookup(uint8_t oid, void *type)
 {
-    if (oid >= oid_count || type != oids[oid].type)
+    if (!oid_verify(oid, type))
         shutdown("Invalid oid type");
     return oids[oid].data;
 }

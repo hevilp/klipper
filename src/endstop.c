@@ -4,12 +4,14 @@
 //
 // This file may be distributed under the terms of the GNU GPLv3 license.
 
+#include "autoconf.h" // CONFIG_HAVE_SERVO_STEPPER
 #include "basecmd.h" // oid_alloc
 #include "board/gpio.h" // struct gpio
 #include "board/irq.h" // irq_disable
 #include "command.h" // DECL_COMMAND
 #include "sched.h" // struct timer
 #include "stepper.h" // stepper_stop
+#include "virtual_stepper.h" // virtual_stepper_stop
 
 struct endstop {
     struct timer time;
@@ -28,9 +30,16 @@ stop_steppers(struct endstop *e)
 {
     e->flags = ESF_REPORT;
     uint8_t count = e->stepper_count;
-    while (count--)
-        if (e->steppers[count])
-            stepper_stop(e->steppers[count]);
+    while (count--) {
+        struct stepper *stepper = e->steppers[count];
+        if (!stepper)
+            continue;
+        if (CONFIG_HAVE_SERVO_STEPPER && virtual_stepper_verify(stepper)) {
+            virtual_stepper_stop((void*)stepper);
+        } else {
+            stepper_stop(stepper);
+        }
+    }
     sched_wake_task(&endstop_wake);
 }
 
@@ -94,10 +103,14 @@ void
 command_endstop_set_stepper(uint32_t *args)
 {
     struct endstop *e = oid_lookup(args[0], command_config_endstop);
-    uint8_t pos = args[1];
+    uint8_t pos = args[1], stepper_oid=args[2];
     if (pos >= e->stepper_count)
         shutdown("Set stepper past maximum stepper count");
-    e->steppers[pos] = stepper_oid_lookup(args[2]);
+    if (CONFIG_HAVE_SERVO_STEPPER && virtual_stepper_oid_verify(stepper_oid)) {
+        e->steppers[pos] = (void*)virtual_stepper_oid_lookup(stepper_oid);
+    } else {
+        e->steppers[pos] = stepper_oid_lookup(args[2]);
+    }
 }
 DECL_COMMAND(command_endstop_set_stepper,
              "endstop_set_stepper oid=%c pos=%c stepper_oid=%c");
