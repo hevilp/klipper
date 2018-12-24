@@ -174,17 +174,26 @@ def PrinterStepper(config, units_in_radians=False):
     printer = config.get_printer()
     name = config.get_name()
     # Stepper definition
-    ppins = printer.lookup_object('pins')
-    step_pin = config.get('step_pin')
-    step_pin_params = ppins.lookup_pin(step_pin, can_invert=True)
-    dir_pin = config.get('dir_pin')
-    dir_pin_params = ppins.lookup_pin(dir_pin, can_invert=True)
-    step_dist = config.getfloat('step_distance', above=0.)
-    mcu_stepper = MCU_stepper(name, step_pin_params, dir_pin_params, step_dist,
-                              units_in_radians)
+    mechaduino = printer.lookup_object('mechaduino ' + name, None)
+    if mechaduino is not None:
+        # XXX - this is a temporary hack
+        mcu_stepper = mechaduino.get_mcu_stepper()
+        # TODO: This may not work correctly, good chance I'll need
+        # to change the stepper_enable module
+        enable = mechaduino
+    else:
+        ppins = printer.lookup_object('pins')
+        step_pin = config.get('step_pin')
+        step_pin_params = ppins.lookup_pin(step_pin, can_invert=True)
+        dir_pin = config.get('dir_pin')
+        dir_pin_params = ppins.lookup_pin(dir_pin, can_invert=True)
+        step_dist = config.getfloat('step_distance', above=0.)
+        mcu_stepper = MCU_stepper(
+            name, step_pin_params, dir_pin_params, step_dist, units_in_radians)
+        enable = config.get('enable_pin', None)
     # Support for stepper enable pin handling
     stepper_enable = printer.try_load_module(config, 'stepper_enable')
-    stepper_enable.register_stepper(mcu_stepper, config.get('enable_pin', None))
+    stepper_enable.register_stepper(mcu_stepper, enable)
     # Register STEPPER_BUZZ command
     force_move = printer.try_load_module(config, 'force_move')
     force_move.register_stepper(mcu_stepper)
