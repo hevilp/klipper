@@ -3,12 +3,16 @@
 # Copyright (C) 2018  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import logging, math
-import bus, chelper
+import logging
+import math
+import bus
+import chelper
 
 UPDATE_TIME = 1. / 6000
 CALIBRATION_COUNT = 32
 
+class error(Exception):
+    pass
 
 ######################################################################
 # Low-level mcu wrappers
@@ -57,29 +61,43 @@ class MCU_a4954:
 # Virtual stepper position tracking class
 # XXX - this is just a dup of mcu.MCU_stepper with different mcu commands
 class MCU_virtual_stepper:
-    def __init__(self, mcu, name):
+    def __init__(self, mcu, name, step_dist, units_in_radians=False):
         self._mcu = mcu
         self._name = name
+        self._step_dist = step_dist
+        self._units_in_radians = units_in_radians
         self._oid = oid = self._mcu.create_oid()
         self._mcu.add_config_cmd("config_virtual_stepper oid=%d" % (self._oid,))
         self._mcu.register_config_callback(self._build_config)
-        self._mcu_position_offset = 0.
-        self._step_dist = 0.
+        self._mcu_position_offset = self._tag_position = 0.
+        self._min_stop_interval = 0.
         self._reset_cmd_id = self._get_position_cmd = None
+        self._active_callbacks = []
         ffi_main, self._ffi_lib = chelper.get_ffi()
         self._stepqueue = ffi_main.gc(self._ffi_lib.stepcompress_alloc(oid),
                                       self._ffi_lib.stepcompress_free)
         self._mcu.register_stepqueue(self._stepqueue)
-        self._stepper_kinematics = self._itersolve_gen_steps = None
-        self.set_ignore_move(False)
+        self._stepper_kinematics = None
+        self._itersolve_generate_steps = self._ffi_lib.itersolve_generate_steps
+        self._itersolve_check_active = self._ffi_lib.itersolve_check_active
+        self._trapq = ffi_main.NULL
     def get_mcu(self):
         return self._mcu
-    def get_name(self):
+    def get_name(self, short=False):
+        if short and self._name.startswith('stepper_'):
+            return self._name[8:]
         return self._name
-    def setup_min_stop_interval(self, min_stop_interval):
+    def set_units(self, units_in_radians):
+        self._units_in_radians = units_in_radians
+    def units_in_radians(self):
+        # Returns true if distances are in radians instead of millimeters
+        return self._units_in_radians
+    def _dist_to_time(self, dist, start_velocity, accel):
+        # Calculate the time it takes to travel a distance with constant accel
+        time_offset = start_velocity / accel
+        return math.sqrt(2. * dist / accel + time_offset**2) - time_offset
+    def set_max_jerk(self, max_halt_velocity, max_accel):
         pass
-    def setup_step_distance(self, step_dist):
-        self._step_dist = step_dist
     def setup_itersolve(self, alloc_func, *params):
         ffi_main, ffi_lib = chelper.get_ffi()
         sk = ffi_main.gc(getattr(ffi_lib, alloc_func)(*params), ffi_lib.free)
@@ -103,11 +121,16 @@ class MCU_virtual_stepper:
         return self._oid
     def get_step_dist(self):
         return self._step_dist
+    def is_dir_inverted(self):
+        return False
     def calc_position_from_coord(self, coord):
         return self._ffi_lib.itersolve_calc_position_from_coord(
             self._stepper_kinematics, coord[0], coord[1], coord[2])
     def set_position(self, coord):
-        self.set_commanded_position(self.calc_position_from_coord(coord))
+        opos = self.get_commanded_position()
+        sk = self._stepper_kinematics
+        self._ffi_lib.itersolve_set_position(sk, coord[0], coord[1], coord[2])
+        self._mcu_position_offset += opos - self.get_commanded_position()
     def get_commanded_position(self):
         return self._ffi_lib.itersolve_get_commanded_pos(
             self._stepper_kinematics)
@@ -120,6 +143,10 @@ class MCU_virtual_stepper:
         if mcu_pos >= 0.:
             return int(mcu_pos + 0.5)
         return int(mcu_pos - 0.5)
+    def get_tag_position(self):
+        return self._tag_position
+    def set_tag_position(self, position):
+        self._tag_position = position
     def set_stepper_kinematics(self, sk):
         old_sk = self._stepper_kinematics
         self._stepper_kinematics = sk
@@ -127,23 +154,7 @@ class MCU_virtual_stepper:
             self._ffi_lib.itersolve_set_stepcompress(
                 sk, self._stepqueue, self._step_dist)
         return old_sk
-    def set_ignore_move(self, ignore_move):
-        was_ignore = (self._itersolve_gen_steps
-                      is not self._ffi_lib.itersolve_gen_steps)
-        if ignore_move:
-            self._itersolve_gen_steps = (lambda *args: 0)
-        else:
-            self._itersolve_gen_steps = self._ffi_lib.itersolve_gen_steps
-        return was_ignore
-    def note_homing_start(self, homing_clock):
-        ret = self._ffi_lib.stepcompress_set_homing(
-            self._stepqueue, homing_clock)
-        if ret:
-            raise error("Internal error in stepcompress")
     def note_homing_end(self, did_trigger=False):
-        ret = self._ffi_lib.stepcompress_set_homing(self._stepqueue, 0)
-        if ret:
-            raise error("Internal error in stepcompress")
         ret = self._ffi_lib.stepcompress_reset(self._stepqueue, 0)
         if ret:
             raise error("Internal error in stepcompress")
@@ -157,10 +168,30 @@ class MCU_virtual_stepper:
         params = self._get_position_cmd.send_with_response(
             [self._oid], response='stepper_position', response_oid=self._oid)
         mcu_pos_dist = params['pos'] * self._step_dist
-        self._ffi_lib.itersolve_set_commanded_pos(
-            self._stepper_kinematics, mcu_pos_dist - self._mcu_position_offset)
-    def step_itersolve(self, cmove):
-        ret = self._itersolve_gen_steps(self._stepper_kinematics, cmove)
+        self._mcu_position_offset = mcu_pos_dist - self.get_commanded_position()
+    def set_trapq(self, tq):
+        if tq is None:
+            ffi_main, self._ffi_lib = chelper.get_ffi()
+            tq = ffi_main.NULL
+        self._ffi_lib.itersolve_set_trapq(self._stepper_kinematics, tq)
+        old_tq = self._trapq
+        self._trapq = tq
+        return old_tq
+    def add_active_callback(self, cb):
+        self._active_callbacks.append(cb)
+    def generate_steps(self, flush_time):
+        # Check for activity if necessary
+        if self._active_callbacks:
+            ret = self._itersolve_check_active(self._stepper_kinematics,
+                                               flush_time)
+            if ret:
+                cbs = self._active_callbacks
+                self._active_callbacks = []
+                for cb in cbs:
+                    cb(ret)
+        # Generate steps
+        ret = self._itersolve_generate_steps(self._stepper_kinematics,
+                                             flush_time)
         if ret:
             raise error("Internal error in stepcompress")
 
@@ -249,7 +280,7 @@ class MCU_spi_position:
         self.set_calibration_cmd = self.mcu.lookup_command(
             "set_spi_position_calibration oid=%c index=%u value=%hu",
             cq=cmd_queue)
-        self.mcu.register_msg(
+        self.mcu.register_response(
             self._handle_spi_position_result, "spi_position_result", self.oid)
     def _handle_spi_position_result(self, params):
         next_clock = self.mcu.clock32_to_clock64(params['next_clock'])
@@ -430,10 +461,9 @@ class PrinterMechaduino:
         self.printer = config.get_printer()
         servo_name = config.get_name().split()[1]
         self.a4954 = MCU_a4954(config)
-        self.mcu_vstepper = MCU_virtual_stepper(
-            self.a4954.get_mcu(), servo_name)
         step_dist = config.getfloat('step_distance', above=0.)
-        self.mcu_vstepper.setup_step_distance(step_dist / 256.)
+        self.mcu_vstepper = MCU_virtual_stepper(
+            self.a4954.get_mcu(), servo_name, step_dist / 256.)
         force_move = self.printer.try_load_module(config, 'force_move')
         force_move.register_stepper(self.mcu_vstepper)
         self.servo_stepper = MCU_servo_stepper(config, self.a4954,
@@ -441,6 +471,8 @@ class PrinterMechaduino:
         self.spi_position = MCU_spi_position(config, self.servo_stepper)
         ServoCalibration(config, self.mcu_vstepper, self.servo_stepper,
                          self.spi_position)
+        stepper_enable = self.printer.try_load_module(config, 'stepper_enable')
+        stepper_enable.register_servo_stepper(self.mcu_vstepper, self)
         # Register commands
         self.gcode = self.printer.lookup_object('gcode')
         self.gcode.register_mux_command("SET_TORQUE_MODE", "SERVO", servo_name,
@@ -448,12 +480,10 @@ class PrinterMechaduino:
                                         desc=self.cmd_SET_TORQUE_MODE_help)
     def get_mcu_stepper(self):
         return self.mcu_vstepper
-    def set_enable(self, print_time, enable):
-        if enable:
-            # XXX - may need to reset virtual stepper position
-            self.servo_stepper.set_open_loop_mode(print_time)
-        else:
-            self.servo_stepper.set_disabled(print_time)
+    def set_enable(self, print_time):
+        self.servo_stepper.set_open_loop_mode(print_time)
+    def set_disable(self, print_time):
+        self.servo_stepper.set_disabled(print_time)
     cmd_SET_TORQUE_MODE_help = "Place servo in torque mode"
     def cmd_SET_TORQUE_MODE(self, params):
         toolhead = self.printer.lookup_object('toolhead')
