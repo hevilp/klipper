@@ -541,6 +541,9 @@ input_event(struct serialqueue *sq, double eventtime)
                    , sizeof(sq->input_buf) - sq->input_pos);
     if (ret <= 0) {
         report_errno("read", ret);
+        if (ret == 0) {
+            errorf("Zero bytes read, exiting poll reactor");
+        }
         pollreactor_do_exit(&sq->pr);
         return;
     }
