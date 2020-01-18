@@ -248,7 +248,7 @@ class MCU_spi_position:
         self.printer = config.get_printer()
         # Sensor type
         sensors = { "a1333": (1, 3, 10000000),
-                    "as5047d": (2, 1, int(1. / .000000350)) }
+                    "as5047d": (2, 1, 10000000) }
         self.sensor_type = config.getchoice(
             'sensor_type', {s: s for s in sensors})
         chip_id, spi_mode, spi_speed = sensors[self.sensor_type]
