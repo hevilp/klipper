@@ -126,6 +126,15 @@ config FLASH_START
     default 0x2000 if FLASH_START_2000
     default 0x0000
 
+choice
+  depends on MACH_SAMD21 && FLASH_START_2000
+  prompt "Bootloader Type"
+  config BOOTLOADER_SAM_BA
+    bool "SAM-BA Bootloader (Arduino Zero)"
+  config BOOTLOADER_UF2
+    bool "UF2 Bootloader (Adafruit Metro)"
+endchoice
+
 config USBSERIAL
     bool "Use USB for communication (instead of serial)" if MACH_SAMD21
     default y

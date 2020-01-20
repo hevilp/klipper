@@ -178,8 +178,10 @@ usb_request_bootloader(void)
         return;
     // Bootloader hack
     irq_disable();
-#if CONFIG_MACH_SAMD21
+#if CONFIG_BOOTLOADER_SAM_BA
     writel((void*)0x20007FFC, 0x07738135);
+#elif CONFIG_MACH_SAMD21
+    writel((void*)(HMCRAMC0_ADDR + HMCRAMC0_SIZE - 4), 0xf01669ef);
 #elif CONFIG_MACH_SAMD51
     writel((void*)(HSRAM_ADDR + HSRAM_SIZE - 4), 0xf01669ef);
 #endif
