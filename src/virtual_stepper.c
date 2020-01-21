@@ -38,7 +38,7 @@ struct virtual_stepper {
     uint8_t flags;
 };
 
-enum { SF_CURRENT_DIR=1<<0, SF_NEXT_DIR=1<<1 };
+enum { SF_CURRENT_DIR=1<<0, SF_NEXT_DIR=1<<1, SF_NEED_RESET=1<<6 };
 
 // Setup a stepper for the next move in its queue
 static uint_fast8_t
@@ -135,6 +135,8 @@ command_virtual_queue_step(uint32_t *args)
         else
             s->first = m;
         s->plast = &m->next;
+    } else if (flags & SF_NEED_RESET) {
+        move_free(m);
     } else {
         s->first = m;
         virtual_stepper_load_next(s);
@@ -168,6 +170,7 @@ command_virtual_reset_step_clock(uint32_t *args)
     if (s->count)
         shutdown("Can't reset time when stepper active");
     s->time.waketime = waketime;
+    s->flags = s->flags & ~SF_NEED_RESET;
     irq_enable();
 }
 DECL_COMMAND(command_virtual_reset_step_clock,
@@ -209,7 +212,7 @@ virtual_stepper_stop(struct virtual_stepper *s)
     sched_del_timer(&s->time);
     s->time.waketime = 0;
     s->count = 0;
-    s->flags = 0;
+    s->flags = SF_NEED_RESET;
     while (s->first) {
         struct virtual_stepper_move *next = s->first->next;
         move_free(s->first);
