@@ -61,11 +61,13 @@ class MCU_a4954:
 # Virtual stepper position tracking class
 # XXX - this is just a dup of mcu.MCU_stepper with different mcu commands
 class MCU_virtual_stepper:
-    def __init__(self, mcu, name, step_dist, units_in_radians=False):
+    def __init__(self, mcu, name, invert_dir, step_dist,
+                 units_in_radians=False):
         self._mcu = mcu
         self._name = name
         self._step_dist = step_dist
         self._units_in_radians = units_in_radians
+        self._invert_dir = invert_dir
         self._oid = oid = self._mcu.create_oid()
         self._mcu.add_config_cmd("config_virtual_stepper oid=%d" % (self._oid,))
         self._mcu.register_config_callback(self._build_config)
@@ -116,13 +118,13 @@ class MCU_virtual_stepper:
             "virtual_stepper_get_position oid=%c")
         self._ffi_lib.stepcompress_fill(
             self._stepqueue, self._mcu.seconds_to_clock(max_error),
-            0, step_cmd_id, dir_cmd_id)
+            self._invert_dir, step_cmd_id, dir_cmd_id)
     def get_oid(self):
         return self._oid
     def get_step_dist(self):
         return self._step_dist
     def is_dir_inverted(self):
-        return False
+        return self._invert_dir
     def calc_position_from_coord(self, coord):
         return self._ffi_lib.itersolve_calc_position_from_coord(
             self._stepper_kinematics, coord[0], coord[1], coord[2])
@@ -168,6 +170,8 @@ class MCU_virtual_stepper:
         params = self._get_position_cmd.send_with_response(
             [self._oid], response='stepper_position', response_oid=self._oid)
         mcu_pos_dist = params['pos'] * self._step_dist
+        if self._invert_dir:
+            mcu_pos_dist = -mcu_pos_dist
         self._mcu_position_offset = mcu_pos_dist - self.get_commanded_position()
     def set_trapq(self, tq):
         if tq is None:
@@ -462,8 +466,9 @@ class PrinterMechaduino:
         servo_name = config.get_name().split()[1]
         self.a4954 = MCU_a4954(config)
         step_dist = config.getfloat('step_distance', above=0.)
+        invert_dir = config.getboolean('invert_direction', False)
         self.mcu_vstepper = MCU_virtual_stepper(
-            self.a4954.get_mcu(), servo_name, step_dist / 256.)
+            self.a4954.get_mcu(), servo_name, invert_dir, step_dist / 256.)
         force_move = self.printer.try_load_module(config, 'force_move')
         force_move.register_stepper(self.mcu_vstepper)
         self.servo_stepper = MCU_servo_stepper(config, self.a4954,
