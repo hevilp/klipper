@@ -198,6 +198,10 @@ class MCU_virtual_stepper:
                                              flush_time)
         if ret:
             raise error("Internal error in stepcompress")
+    def get_realtime_position(self):
+        params = self._get_position_cmd.send_with_response(
+            [self._oid], response='stepper_position', response_oid=self._oid)
+        return params['pos']
 
 # Servo stepper feedback control code
 class MCU_servo_stepper:
@@ -284,21 +288,32 @@ class MCU_spi_position:
         self.set_calibration_cmd = self.mcu.lookup_command(
             "set_spi_position_calibration oid=%c index=%u value=%hu",
             cq=cmd_queue)
-        self.mcu.register_response(
-            self._handle_spi_position_result, "spi_position_result", self.oid)
     def _handle_spi_position_result(self, params):
         next_clock = self.mcu.clock32_to_clock64(params['next_clock'])
         last_read_clock = next_clock - self.update_clock
         last_read_time = self.mcu.clock_to_print_time(last_read_clock)
         position = params['position']
         self.positions.append((last_read_time, position))
+    def init_calibration(self):
+        self.positions = []
+        self.mcu.register_response(
+            self._handle_spi_position_result, "spi_position_result", self.oid)
     def query_position(self, print_time):
         clock = self.mcu.print_time_to_clock(print_time)
         self.query_pos_cmd.send([self.oid], minclock=clock, reqclock=clock)
     def get_clear_positions(self):
+        self.mcu.register_response(
+            None, "spi_position_result", self.oid)
         pos = self.positions
         self.positions = []
         return list(pos)
+    def get_position(self):
+        params = self.query_pos_cmd.send_with_response(
+            [self.oid], response='spi_position_result', response_oid=self.oid)
+        if params is not None:
+            return params['position']
+        else:
+            return None
     def apply_calibration(self, print_time, calibration):
         for i, cal in enumerate(calibration):
             if self.set_calibration_cmd is None:
@@ -383,7 +398,7 @@ class ServoCalibration:
         self.spi_position.apply_calibration(print_time, bc)
     cmd_SERVO_CALIBRATE_help = "Calibrate the servo stepper"
     def cmd_SERVO_CALIBRATE(self, params):
-        self.spi_position.get_clear_positions()
+        self.spi_position.init_calibration()
         full_steps = self.servo_stepper.get_full_steps_per_rotation()
         # Go into open loop mode
         toolhead = self.printer.lookup_object('toolhead')
@@ -483,6 +498,10 @@ class PrinterMechaduino:
         self.gcode.register_mux_command("SET_TORQUE_MODE", "SERVO", servo_name,
                                         self.cmd_SET_TORQUE_MODE,
                                         desc=self.cmd_SET_TORQUE_MODE_help)
+        self.gcode.register_mux_command(
+            "GET_SERVO_POSITION", "SERVO", servo_name,
+            self.cmd_GET_SERVO_POSITION,
+            desc=self.cmd_GET_SERVO_POSITION_help)
     def get_mcu_stepper(self):
         return self.mcu_vstepper
     def set_enable(self, print_time):
@@ -499,6 +518,13 @@ class PrinterMechaduino:
             self.servo_stepper.set_disabled(print_time)
         else:
             self.servo_stepper.set_torque_mode(print_time, excite, current)
+    cmd_GET_SERVO_POSITION_help = "Get Stepper and Encoder Position of Servo"
+    def cmd_GET_SERVO_POSITION(self, params):
+        realtime_pos = self.mcu_vstepper.get_realtime_position()
+        enc_pos = self.spi_position.get_position()
+        self.gcode.respond_info(
+            "Stepper Position: %d, Encoder Position: %d" %
+            (realtime_pos, enc_pos & 0xFFFF))
 
 def load_config_prefix(config):
     return PrinterMechaduino(config)
