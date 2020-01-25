@@ -6,6 +6,7 @@
 
 #include "board/irq.h" // irq_disable
 #include "board/gpio.h" // gpio_pwm_write
+#include "board/misc.h" // timer_read_time
 #include "basecmd.h" // oid_alloc
 #include "command.h" // DECL_COMMAND
 #include "driver_a4954.h" // a4954_oid_lookup
@@ -18,15 +19,23 @@
     ((val) > (max) ? (max) : (val)))
 #define ABS(val)((val) < 0 ? -(val) : (val))
 #define PID_SCALE_SHIFT 10
-// TODO:  We probably should measure the real update time rather than assume
-// we are getting it every 160us
-#define PID_ALLOWABLE_ERROR 32
-#define POS_UPDATE_TIME 160
+// TODO:  TIME_SCALE_SHIFT needs to be calculated based on the clock frequency
+// To get the expected number of nano seconds it takes to run the loop at 6KHz:
+// ns_per_update = CONFIG_CLOCK_FREQ / 166667
+// Divide by 60 for scale:
+// divisor = ns_per_update / 60
+// Then we need to get the location of the MSB set to 1
+// Not sure how to get the preprocessor to do this.
+#define TIME_SCALE_SHIFT 17
+#define PID_ALLOWABLE_ERROR 16
+
 
 struct pid_control {
     int16_t Kp, Ki, Kd;
-    int32_t last_error;
-    uint32_t last_position, last_sample_time;
+    int32_t integral;
+    uint32_t last_phase;
+    uint32_t last_position;
+    uint32_t last_sample_time;
 };
 
 struct servo_stepper {
@@ -69,54 +78,47 @@ static void
 servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
 {
     // hpid = hybrid pid
-    // The idea behind hybrid PID is to skip the PID loop if the stepper was not
-    // commanded to move AND the measured position is within an acceptable error.
-    // In the initial test I will allow a phase
-    // of +/- 32 (8 microsteps), as this seems like a reasonable
-    //
-    // TODO:  I may need to check to see if the incoming position's MSB is 1,
-    // as that would indicate that the encoder is traveled past 0 in the reverse
-    // direction.  If the direction the stepper travels is inverted from the direction
-    // the encoder measures we need to find a way to correct for that as well.
-    //
-    // position_offset needs to be calculated in the init sequence.  Essentially
-    // it needs to be the difference between the encoder and the stepper position,
-    // the questions do I need it?  During init I could sample the encoder position,
-    // average the value, convert it to phase, then set that as the virtual stepper position.
-    // I think that is what Kevin intended.  Its probably better to query the position and
-    // do the average on the host.
-    //
-    // We will also likely need to store the previous measured phase to do the deriviative
-    // correctly
-    //
+    // The idea behind hybrid PID is to skip the PID loop if the stepper was
+    // not commanded to move AND the measured position is within an acceptable
+    // error. In the initial test I will allow a phase of +/- 16 microsteps,
+    // as this seems like reasonable accuracy for the encoder to maintain.
+
+    // TODO: Implement Alpha-Beta Filter on the Encoder Position using
+    // the stepper phase current
+
+    uint32_t sample_time = timer_read_time();
+    uint32_t time_diff = (sample_time - ss->pid_ctrl.last_sample_time)
+        >> TIME_SCALE_SHIFT;
+    if (unlikely(time_diff == 0))
+        time_diff = 1;
     uint32_t current_phase = position_to_phase(ss, position);
     uint32_t desired_pos = virtual_stepper_get_position(ss->virtual_stepper);
-
-    // TODO: need to handle wrap around/overflow to correctly get the error
     int32_t error = desired_pos - current_phase;
-    if (ABS(error) < PID_ALLOWABLE_ERROR) {
-        return;
+
+    // Calculate the i-term;
+    ss->pid_ctrl.integral += error * time_diff;
+    ss->pid_ctrl.integral = CONSTRAIN(ss->pid_ctrl.integral, -256, 256);
+
+    if (ABS(error) < PID_ALLOWABLE_ERROR &&
+        desired_pos == ss->pid_ctrl.last_position) {
+        // Error is within the allowable threshold and no additional movement
+        // has been requested, so we can hold
+        a4954_set_phase(ss->stepper_driver, desired_pos, ss->hold_current_scale);
+    } else {
+        // Enter the PID Loop
+        int32_t phase_diff = current_phase - ss->pid_ctrl.last_phase;
+        int32_t co = ((ss->pid_ctrl.Kp * error) +
+            (ss->pid_ctrl.Ki * ss->pid_ctrl.integral) -
+            (ss->pid_ctrl.Kd * phase_diff / time_diff)) >> PID_SCALE_SHIFT;
+        co = CONSTRAIN(co, -256, 256);
+        uint32_t cur_scale = ((ABS(co) * (ss->run_current_scale -
+            ss->hold_current_scale)) >> 8) + ss->hold_current_scale;
+        a4954_set_phase(ss->stepper_driver, current_phase + co, cur_scale);
     }
 
-    // PID algoritm
-    // error = desired position (stepper postion) - read position (phase)
-    // P_term = kp * error
-    // I_term = prevoius_I_term + (ki * current_update_time - prev_update_time)
-    // **** The I term should be bound to +/- one full step (+/- 256 I beleive)
-    // D_term = kd * ((current_measured_phase - previous_measured_phase) / (current_update_time - prev_update_time))
-    // **** Note that its possible to create a "min derivative time" variable to change how the D_term is calculated and
-    // thus how it behaves.  Increasing should re
-    //
-    // CO = P_term + I_term - D_term
-    // *** CO should be bound to one full step.  Whe calculating current, it should
-    // be scaled to the correct range and bound within hold and run currents
-    //
-    // Each of kp, ki, and kd are scaled, as they are input as floating point values
-    // I need to see the best way to do this.
-    //
-    // Since time is returned in clock ticks, I also need to figure out the best way to represent it
-    // without making all of my values zero.  I really need to just use the monotonic clock
-
+    ss->pid_ctrl.last_phase = current_phase;
+    ss->pid_ctrl.last_position = desired_pos;
+    ss->pid_ctrl.last_sample_time = sample_time;
 }
 
 void
@@ -178,12 +180,15 @@ servo_stepper_set_hpid_mode(struct servo_stepper *ss, uint32_t *args)
         shutdown("PID Mode must transition from open-loop");
 
     irq_disable();
-    uint32_t position = args[3];
-    ss->pid_ctrl.last_position = position;
+    uint32_t position = position_to_phase(ss, args[3]);
     virtual_stepper_set_position(ss->virtual_stepper, position);
     ss->pid_ctrl.Kp = args[4];
     ss->pid_ctrl.Ki = args[5];
     ss->pid_ctrl.Kd = args[6];
+    ss->pid_ctrl.last_position = position;
+    ss->pid_ctrl.last_phase = position;
+    ss->pid_ctrl.last_sample_time = timer_read_time();
+    ss->pid_ctrl.integral = 0;
     ss->flags = SS_MODE_HPID;
     irq_enable();
 }
