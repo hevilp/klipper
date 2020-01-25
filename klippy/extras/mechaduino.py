@@ -200,6 +200,9 @@ class MCU_virtual_stepper:
                                              flush_time)
         if ret:
             raise error("Internal error in stepcompress")
+    def is_active_axis(self, axis):
+        return self._ffi_lib.itersolve_is_active_axis(
+            self._stepper_kinematics, axis)
     def get_realtime_position(self):
         params = self._get_position_cmd.send_with_response(
             [self._oid], response='stepper_position', response_oid=self._oid)
