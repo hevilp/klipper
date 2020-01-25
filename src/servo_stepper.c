@@ -41,7 +41,7 @@ struct servo_stepper {
 
 enum {
     SS_MODE_DISABLED = 0, SS_MODE_OPEN_LOOP = 1, SS_MODE_TORQUE = 2,
-    SS_MODE_HPID = 3, SS_MODE_PID_INIT = 4
+    SS_MODE_HPID = 3
 };
 
 static uint32_t
@@ -151,63 +151,79 @@ servo_stepper_oid_lookup(uint8_t oid)
     return oid_lookup(oid, command_config_servo_stepper);
 }
 
-void
-command_servo_stepper_set_disabled(uint32_t *args)
+static void
+servo_stepper_set_disabled(struct servo_stepper *ss)
 {
-    struct servo_stepper *ss = servo_stepper_oid_lookup(args[0]);
     irq_disable();
     ss->flags = SS_MODE_DISABLED;
     a4954_disable(ss->stepper_driver);
     irq_enable();
 }
-DECL_COMMAND(command_servo_stepper_set_disabled,
-             "servo_stepper_set_disabled oid=%c");
 
-void
-command_servo_stepper_set_open_loop_mode(uint32_t *args)
+static void
+servo_stepper_set_open_loop_mode(struct servo_stepper *ss, uint32_t *args)
 {
-    struct servo_stepper *ss = servo_stepper_oid_lookup(args[0]);
     irq_disable();
     a4954_enable(ss->stepper_driver);
     ss->flags = SS_MODE_OPEN_LOOP;
-    ss->run_current_scale = args[1];
-    ss->hold_current_scale = args[2];
+    ss->run_current_scale = args[2];
+    ss->hold_current_scale = args[3];
     irq_enable();
 }
-DECL_COMMAND(command_servo_stepper_set_open_loop_mode,
-             "servo_stepper_set_open_loop_mode oid=%c"
-             " run_current_scale=%u, hold_current_scale=%u");
 
-void
-command_servo_stepper_set_hpid_mode(uint32_t *args)
+static void
+servo_stepper_set_hpid_mode(struct servo_stepper *ss, uint32_t *args)
 {
-    struct servo_stepper *ss = servo_stepper_oid_lookup(args[0]);
     if (!(ss->flags & SS_MODE_OPEN_LOOP))
-        shutdown("PID mode must transition from open-loop");
+        shutdown("PID Mode must transition from open-loop");
+
     irq_disable();
-    ss->flags = SS_MODE_HPID;
-    uint32_t position = args[1];
+    uint32_t position = args[3];
     ss->pid_ctrl.last_position = position;
     virtual_stepper_set_position(ss->virtual_stepper, position);
-    ss->pid_ctrl.Kp = args[2];
-    ss->pid_ctrl.Ki = args[3];
-    ss->pid_ctrl.Kd = args[4];
+    ss->pid_ctrl.Kp = args[4];
+    ss->pid_ctrl.Ki = args[5];
+    ss->pid_ctrl.Kd = args[6];
+    ss->flags = SS_MODE_HPID;
     irq_enable();
 }
-DECL_COMMAND(command_servo_stepper_set_hpid_mode,
-             "servo_stepper_set_hpid_mode oid=%c stepper_pos=%u"
-             " kp=%hi ki=%hi kd=%hi");
-void
-command_servo_stepper_set_torque_mode(uint32_t *args)
+
+static void
+servo_stepper_set_torque_mode(struct servo_stepper *ss, uint32_t *args)
 {
-    struct servo_stepper *ss = servo_stepper_oid_lookup(args[0]);
     irq_disable();
     a4954_enable(ss->stepper_driver);
     ss->flags = SS_MODE_TORQUE;
-    ss->excite_angle = args[1];
     ss->run_current_scale = args[2];
+    ss->excite_angle = args[3];
     irq_enable();
 }
-DECL_COMMAND(command_servo_stepper_set_torque_mode,
-             "servo_stepper_set_torque_mode oid=%c"
-             " excite_angle=%u current_scale=%u");
+
+void
+command_servo_stepper_set_mode(uint32_t *args)
+{
+    // Note:  The flex arg (arg[3]) can be the hold_current_scale,
+    // excite_angle, or stepper_pos
+    struct servo_stepper *ss = servo_stepper_oid_lookup(args[0]);
+    uint8_t mode = args[1];
+    switch(mode) {
+        case 0:
+            servo_stepper_set_disabled(ss);
+            break;
+        case 1:
+            servo_stepper_set_open_loop_mode(ss, args);
+            break;
+        case 2:
+            servo_stepper_set_torque_mode(ss, args);
+            break;
+        case 3:
+            servo_stepper_set_hpid_mode(ss, args);
+            break;
+        default:
+            shutdown("Unknown Servo Mode");
+    }
+}
+DECL_COMMAND(command_servo_stepper_set_mode,
+             "servo_stepper_set_mode oid=%c mode=%c run_current_scale=%u"
+             " flex=%u kp=%hi ki=%hi kd=%hi");
+

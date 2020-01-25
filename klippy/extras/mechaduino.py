@@ -219,9 +219,7 @@ class MCU_servo_stepper:
                 self.oid, stepper_driver.get_oid(), virtual_stepper.get_oid(),
                 self.full_steps_per_rotation))
         # Commands
-        self.disabled_cmd = self.open_loop_mode_cmd = None
-        self.torque_mode_cmd = None
-        self.hpid_mode_cmd = None
+        self.set_mode_cmd = None
         self.mcu.register_config_callback(self._build_config)
     def get_oid(self):
         return self.oid
@@ -229,42 +227,34 @@ class MCU_servo_stepper:
         return self.full_steps_per_rotation
     def _build_config(self):
         cmd_queue = self.mcu.alloc_command_queue()
-        self.disabled_cmd = self.mcu.lookup_command(
-            "servo_stepper_set_disabled oid=%c", cq=cmd_queue)
-        self.open_loop_mode_cmd = self.mcu.lookup_command(
-            "servo_stepper_set_open_loop_mode oid=%c"
-            " run_current_scale=%u, hold_current_scale=%u",
-            cq=cmd_queue)
-        self.torque_mode_cmd = self.mcu.lookup_command(
-            "servo_stepper_set_torque_mode oid=%c"
-            " excite_angle=%u current_scale=%u",
-            cq=cmd_queue)
-        self.hpid_mode_cmd = self.mcu.lookup_command(
-            "servo_stepper_set_hpid_mode oid=%c stepper_pos=%u"
-            " kp=%hi ki=%hi kd=%hi",
-            cq=cmd_queue)
+        self.set_mode_cmd = self.mcu.lookup_command(
+            "servo_stepper_set_mode oid=%c mode=%c run_current_scale=%u"
+            " flex=%u kp=%hi ki=%hi kd=%hi", cq=cmd_queue)
     def set_disabled(self, print_time):
         clock = self.mcu.print_time_to_clock(print_time)
-        self.disabled_cmd.send([self.oid], minclock=clock, reqclock=clock)
+        self.set_mode_cmd.send(
+            [self.oid, 0, 0, 0, 0, 0, 0], minclock=clock, reqclock=clock)
     def set_open_loop_mode(self, print_time):
         clock = self.mcu.print_time_to_clock(print_time)
         rc_scale = self.stepper_driver.get_current_scale()
         hc_scale = self.stepper_driver.get_current_scale(
             self.stepper_driver.hold_current)
-        self.open_loop_mode_cmd.send([self.oid, rc_scale, hc_scale],
-                                     minclock=clock, reqclock=clock)
+        self.set_mode_cmd.send(
+            [self.oid, 1, rc_scale, hc_scale, 0, 0, 0],
+            minclock=clock, reqclock=clock)
     def set_torque_mode(self, print_time, excite_angle, current):
         clock = self.mcu.print_time_to_clock(print_time)
         current_scale = self.stepper_driver.get_current_scale(current)
-        self.torque_mode_cmd.send([self.oid, excite_angle, current_scale],
-                                  minclock=clock, reqclock=clock)
+        self.set_mode_cmd.send(
+            [self.oid, 2, current_scale, excite_angle, 0, 0, 0],
+            minclock=clock, reqclock=clock)
     def set_hpid_mode(self, print_time, start_pos, kp, ki, kd):
         clock = self.mcu.print_time_to_clock(print_time)
         kp = int(kp * 1024)
         ki = int(ki * 1024)
         kd = int(kd * 1024)
-        self.hpid_mode_cmd.send(
-            [self.oid, start_pos, kp, ki, kd],
+        self.set_mode_cmd.send(
+            [self.oid, 3, 0, start_pos, kp, ki, kd],
             minclock=clock, reqclock=clock)
 
 # SPI controlled hall position sensor
@@ -503,7 +493,7 @@ class PrinterMechaduino:
         modes = {'open_loop': 'open_loop', 'hpid': 'hpid'}
         self.mode = config.getchoice('mode', modes, 'open_loop')
         self.Kp = self.Ki = self.Kd = None
-        if self.mode:
+        if self.mode != 'open_loop':
             self.Kp = config.getfloat('pid_Kp', minval=0.)
             self.Ki = config.getfloat('pid_Ki', minval=0.)
             self.Kd = config.getfloat('pid_Kd', minval=0.)
@@ -536,6 +526,7 @@ class PrinterMechaduino:
         toolhead = self.printer.lookup_object('toolhead')
         # Start in open loop mode to enable the stepper and set currents
         self.servo_stepper.set_open_loop_mode(print_time)
+        self.spi_position.init_position_query()
         start_query_time = toolhead.get_last_move_time() + 0.050
         for j in range(10):
             self.spi_position.query_position(start_query_time + j*0.010)
@@ -543,6 +534,7 @@ class PrinterMechaduino:
         toolhead.dwell(0.050 + end_query_time - start_query_time)
         toolhead.wait_moves()
         positions = self.spi_position.get_clear_positions()
+        positions = [pos for qt, pos in positions]
         logging.info("[Mechaduino]: Encoder Start Positions")
         logging.info(positions)
         if len(positions) != 10:
@@ -560,9 +552,9 @@ class PrinterMechaduino:
                 "Servo Stepper: High variance among received encoder positions")
         pos_avg = sum(positions) // len(positions)
         logging.info("[Mechaduino]: Average Init Pos = %d" % (pos_avg))
-        new_print_time = toolhead.get_last_move_time()
+        print_time = toolhead.get_last_move_time()
         self.servo_stepper.set_hpid_mode(
-            new_print_time, pos_avg, self.Kp, self.Ki, self.Kd)
+            print_time, pos_avg, self.Kp, self.Ki, self.Kd)
     def get_mcu_stepper(self):
         return self.mcu_vstepper
     def set_enable(self, print_time):
@@ -592,7 +584,10 @@ class PrinterMechaduino:
     def cmd_TEST_PID_INIT(self, params):
         toolhead = self.printer.lookup_object('toolhead')
         print_time = toolhead.get_last_move_time()
-        self._enable_pid_mode(print_time)
+        if self.gcode.get_int('DISABLE', params, 0):
+            self.servo_stepper.set_disabled(print_time)
+        else:
+            self._enable_pid_mode(print_time)
 
 def load_config_prefix(config):
     return PrinterMechaduino(config)
