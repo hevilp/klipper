@@ -430,6 +430,8 @@ class ServoCalibration:
         self.spi_position.apply_calibration(print_time, bc)
     cmd_SERVO_CALIBRATE_help = "Calibrate the servo stepper"
     def cmd_SERVO_CALIBRATE(self, params):
+        direction = self.gcode.get_int('INVERT_DIR', params, 0)
+        direction = 1 if direction else -1
         self.spi_position.init_position_query()
         full_steps = self.servo_stepper.get_full_steps_per_rotation()
         # Go into open loop mode
@@ -443,11 +445,13 @@ class ServoCalibration:
         full_step_dist = step_dist * 256
         move_time = 0.100
         move_speed = full_step_dist / move_time
-        fmove.manual_move(self.mcu_vstepper, 16. * -full_step_dist, move_speed)
+        fmove.manual_move(
+            self.mcu_vstepper, 16. * direction * full_step_dist, move_speed)
         # Move to each full step position and then query the sensor
         steps = []
         for i in range(full_steps - 1, -1, -1):
-            fmove.manual_move(self.mcu_vstepper, -full_step_dist, move_speed)
+            fmove.manual_move(
+                self.mcu_vstepper, direction * full_step_dist, move_speed)
             start_query_time = toolhead.get_last_move_time() + 0.050
             for j in range(10):
                 self.spi_position.query_position(start_query_time + j*0.010)
