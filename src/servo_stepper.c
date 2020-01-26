@@ -29,7 +29,6 @@
 #define TIME_SCALE_SHIFT 17
 #define PID_ALLOWABLE_ERROR 16
 
-
 struct pid_control {
     int16_t Kp, Ki, Kd;
     int32_t integral;
@@ -41,6 +40,7 @@ struct pid_control {
 struct servo_stepper {
     struct a4954 *stepper_driver;
     struct virtual_stepper *virtual_stepper;
+    struct pid_init p_init;
     struct pid_control pid_ctrl;
     uint32_t full_steps_per_rotation;
     uint32_t excite_angle;
@@ -50,7 +50,7 @@ struct servo_stepper {
 
 enum {
     SS_MODE_DISABLED = 0, SS_MODE_OPEN_LOOP = 1, SS_MODE_TORQUE = 2,
-    SS_MODE_HPID = 3
+    SS_MODE_HPID = 3, SS_MODE_PID_INIT = 4
 };
 
 static uint32_t
@@ -72,6 +72,23 @@ servo_stepper_mode_torque_update(struct servo_stepper *ss, uint32_t position)
     uint32_t phase = position_to_phase(ss, position);
     a4954_set_phase(ss->stepper_driver, phase + ss->excite_angle
                     , ss->run_current_scale);
+}
+
+static void
+servo_stepper_mode_pid_init(struct servo_stepper *ss, uint32_t position)
+{
+    // TODO: It might be desirable to take an average of several samples,
+    // however we would need to be careful to check if the position is
+    // oscillating near 0, as a wrap around would affect the average
+
+    uint32_t phase = position_to_phase(ss, position);
+    virtual_stepper_set_position(ss->virtual_stepper, phase);
+    ss->pid_ctrl.last_position = phase;
+    ss->pid_ctrl.last_phase = phase;
+    ss->pid_ctrl.last_sample_time = timer_read_time();
+    ss->pid_ctrl.integral = 0;
+    ss->flags = SS_MODE_HPID;
+
 }
 
 static void
@@ -129,6 +146,7 @@ servo_stepper_update(struct servo_stepper *ss, uint32_t position)
     case SS_MODE_OPEN_LOOP: servo_stepper_mode_open_loop(ss, position); break;
     case SS_MODE_TORQUE: servo_stepper_mode_torque_update(ss, position); break;
     case SS_MODE_HPID: servo_stepper_mode_hpid_update(ss, position); break;
+    case SS_MODE_PID_INIT: servo_stepper_mode_pid_init(ss, position); break;
     }
 }
 
@@ -176,20 +194,16 @@ servo_stepper_set_open_loop_mode(struct servo_stepper *ss, uint32_t *args)
 static void
 servo_stepper_set_hpid_mode(struct servo_stepper *ss, uint32_t *args)
 {
-    if (!(ss->flags & SS_MODE_OPEN_LOOP))
-        shutdown("PID Mode must transition from open-loop");
-
     irq_disable();
-    uint32_t position = position_to_phase(ss, args[3]);
-    virtual_stepper_set_position(ss->virtual_stepper, position);
+    a4954_enable(ss->stepper_driver);
+    ss->run_current_scale = args[2];
+    ss->hold_current_scale = args[3];
     ss->pid_ctrl.Kp = args[4];
     ss->pid_ctrl.Ki = args[5];
     ss->pid_ctrl.Kd = args[6];
-    ss->pid_ctrl.last_position = position;
-    ss->pid_ctrl.last_phase = position;
-    ss->pid_ctrl.last_sample_time = timer_read_time();
-    ss->pid_ctrl.integral = 0;
-    ss->flags = SS_MODE_HPID;
+    ss->pid_ctrl.init_count = 0;
+    ss->pid_ctrl.init_total = 0;
+    ss->flags = SS_MODE_PID_INIT;
     irq_enable();
 }
 
@@ -207,8 +221,8 @@ servo_stepper_set_torque_mode(struct servo_stepper *ss, uint32_t *args)
 void
 command_servo_stepper_set_mode(uint32_t *args)
 {
-    // Note:  The flex arg (arg[3]) can be the hold_current_scale,
-    // excite_angle, or stepper_pos
+    // Note:  The flex arg (arg[3]) can be the hold_current_scale or
+    // excite_angle
     struct servo_stepper *ss = servo_stepper_oid_lookup(args[0]);
     uint8_t mode = args[1];
     switch(mode) {

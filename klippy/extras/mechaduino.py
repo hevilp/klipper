@@ -251,13 +251,16 @@ class MCU_servo_stepper:
         self.set_mode_cmd.send(
             [self.oid, 2, current_scale, excite_angle, 0, 0, 0],
             minclock=clock, reqclock=clock)
-    def set_hpid_mode(self, print_time, start_pos, kp, ki, kd):
+    def set_hpid_mode(self, print_time, kp, ki, kd):
         clock = self.mcu.print_time_to_clock(print_time)
+        rc_scale = self.stepper_driver.get_current_scale()
+        hc_scale = self.stepper_driver.get_current_scale(
+            self.stepper_driver.hold_current)
         kp = int(kp * 1024)
         ki = int(ki * 1024)
         kd = int(kd * 1024)
         self.set_mode_cmd.send(
-            [self.oid, 3, 0, start_pos, kp, ki, kd],
+            [self.oid, 3, rc_scale, hc_scale, kp, ki, kd],
             minclock=clock, reqclock=clock)
 
 # SPI controlled hall position sensor
@@ -403,6 +406,11 @@ class ServoCalibration:
         angles = [float(d) for d in data if d]
         # Calculate and apply calibration data
         calibration = self.get_calibration(angles)
+        msg = "Applying Calibration to Servo [%s]:" % (self.name)
+        for i, cal in enumerate(calibration):
+            msg += "\n" if not i % 8 else " "
+            msg += "%d" % (cal)
+        logging.info(msg)
         self.spi_position.apply_calibration(0., calibration)
     def reset_calibration(self, print_time):
         bc = self.get_base_calibration()
@@ -525,46 +533,14 @@ class PrinterMechaduino:
         self.gcode.register_mux_command(
             "TEST_PID_INIT", "SERVO", servo_name,
             self.cmd_TEST_PID_INIT)
-    def _enable_pid_mode(self, print_time):
-        toolhead = self.printer.lookup_object('toolhead')
-        # Start in open loop mode to enable the stepper and set currents
-        self.servo_stepper.set_open_loop_mode(print_time)
-        self.spi_position.init_position_query()
-        start_query_time = toolhead.get_last_move_time() + 0.050
-        for j in range(10):
-            self.spi_position.query_position(start_query_time + j*0.010)
-        end_query_time = start_query_time + 10 * 0.010
-        toolhead.dwell(0.050 + end_query_time - start_query_time)
-        toolhead.wait_moves()
-        positions = self.spi_position.get_clear_positions()
-        positions = [pos for qt, pos in positions]
-        logging.info("[Mechaduino]: Encoder Start Positions")
-        logging.info(positions)
-        if len(positions) != 10:
-            # XXX - Might want to raise an exception here?  Or retry?
-            logging.info(
-                "Servo Stepper: Got [%d] encoder positions during PID init"
-                % (len(positions)))
-        minval = min(positions)
-        maxval = max(positions)
-        logging.info(
-            "[Mechaduino]: Max Position Variance = %d" % (maxval - minval))
-        if maxval - minval > 256:
-            # XXX - Might want to raise an exception here?  Or retry?
-            logging.info(
-                "Servo Stepper: High variance among received encoder positions")
-        pos_avg = sum(positions) // len(positions)
-        logging.info("[Mechaduino]: Average Init Pos = %d" % (pos_avg))
-        print_time = toolhead.get_last_move_time()
-        self.servo_stepper.set_hpid_mode(
-            print_time, pos_avg, self.Kp, self.Ki, self.Kd)
     def get_mcu_stepper(self):
         return self.mcu_vstepper
     def set_enable(self, print_time):
         if self.mode == "open_loop":
             self.servo_stepper.set_open_loop_mode(print_time)
-        else:
-            self._enable_pid_mode(print_time)
+        elif self.mode == "hpid":
+            self.servo_stepper.set_hpid_mode(
+                print_time, self.Kp, self.Ki, self.Kd)
     def set_disable(self, print_time):
         self.servo_stepper.set_disabled(print_time)
     cmd_SET_TORQUE_MODE_help = "Place servo in torque mode"
@@ -590,7 +566,8 @@ class PrinterMechaduino:
         if self.gcode.get_int('DISABLE', params, 0):
             self.servo_stepper.set_disabled(print_time)
         else:
-            self._enable_pid_mode(print_time)
+            self.servo_stepper.set_hpid_mode(
+                print_time, self.Kp, self.Ki, self.Kd)
 
 def load_config_prefix(config):
     return PrinterMechaduino(config)
