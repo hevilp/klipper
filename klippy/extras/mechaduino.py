@@ -333,10 +333,10 @@ class MCU_spi_position:
             if self.set_calibration_cmd is None:
                 self.mcu.add_config_cmd(
                     "set_spi_position_calibration oid=%d index=%d value=%d" % (
-                        self.oid, i, cal), is_init=True)
+                        self.oid, i, cal & 0xFFFF), is_init=True)
             else:
                 clock = self.mcu.print_time_to_clock(print_time)
-                self.set_calibration_cmd.send([self.oid, i, cal],
+                self.set_calibration_cmd.send([self.oid, i, cal & 0xFFFF],
                                               minclock=clock, reqclock=clock)
 
 
