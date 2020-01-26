@@ -214,6 +214,13 @@ class MCU_servo_stepper:
         self.mcu = stepper_driver.get_mcu()
         self.stepper_driver = stepper_driver
         self.oid = self.mcu.create_oid()
+        modes = {'open_loop': 'open_loop', 'hpid': 'hpid'}
+        self.servo_mode = config.getchoice('mode', modes, 'open_loop')
+        self.Kp = self.Ki = self.Kd = None
+        if self.servo_mode != 'open_loop':
+            self.Kp = config.getfloat('pid_Kp', minval=0.)
+            self.Ki = config.getfloat('pid_Ki', minval=0.)
+            self.Kd = config.getfloat('pid_Kd', minval=0.)
         self.full_steps_per_rotation = config.getint(
             'full_steps_per_rotation', 200, minval=4)
         self.mcu.add_config_cmd(
@@ -251,17 +258,23 @@ class MCU_servo_stepper:
         self.set_mode_cmd.send(
             [self.oid, 2, current_scale, excite_angle, 0, 0, 0],
             minclock=clock, reqclock=clock)
-    def set_hpid_mode(self, print_time, kp, ki, kd):
+    def set_hpid_mode(self, print_time):
         clock = self.mcu.print_time_to_clock(print_time)
         rc_scale = self.stepper_driver.get_current_scale()
         hc_scale = self.stepper_driver.get_current_scale(
             self.stepper_driver.hold_current)
-        kp = int(kp * 1024)
-        ki = int(ki * 1024)
-        kd = int(kd * 1024)
+        kp = int(self.Kp * 1024)
+        ki = int(self.Ki * 1024)
+        kd = int(self.Kd * 1024)
         self.set_mode_cmd.send(
             [self.oid, 3, rc_scale, hc_scale, kp, ki, kd],
             minclock=clock, reqclock=clock)
+    def set_servo_mode(self, mode):
+        old_mode = self.servo_mode
+        self.servo_mode = mode
+        return old_mode
+    def get_servo_mode(self):
+        return self.servo_mode
 
 # SPI controlled hall position sensor
 class MCU_spi_position:
@@ -420,9 +433,9 @@ class ServoCalibration:
         self.spi_position.init_position_query()
         full_steps = self.servo_stepper.get_full_steps_per_rotation()
         # Go into open loop mode
+        old_mode = self.servo_stepper.set_servo_mode("open_loop")
         toolhead = self.printer.lookup_object('toolhead')
         print_time = toolhead.get_last_move_time()
-        self.servo_stepper.set_open_loop_mode(print_time)
         self.reset_calibration(print_time)
         # Start with a dummy movement
         fmove = self.printer.lookup_object('force_move')
@@ -441,7 +454,10 @@ class ServoCalibration:
             end_query_time = start_query_time + 10 * 0.010
             steps.append((i, start_query_time, end_query_time))
             toolhead.dwell(0.050 + end_query_time - start_query_time)
-        self.servo_stepper.set_disabled(toolhead.get_last_move_time())
+        stepper_enable = self.printer.lookup_object('stepper_enable')
+        se = stepper_enable.lookup_enable(self.mcu_vstepper.get_name())
+        se.motor_disable(toolhead.get_last_move_time())
+        self.servo_stepper.set_servo_mode(old_mode)
         toolhead.wait_moves()
         # Correlate query responses
         cal = {}
@@ -501,13 +517,6 @@ class PrinterMechaduino:
         self.a4954 = MCU_a4954(config)
         step_dist = config.getfloat('step_distance', above=0.)
         invert_dir = config.getboolean('invert_direction', False)
-        modes = {'open_loop': 'open_loop', 'hpid': 'hpid'}
-        self.mode = config.getchoice('mode', modes, 'open_loop')
-        self.Kp = self.Ki = self.Kd = None
-        if self.mode != 'open_loop':
-            self.Kp = config.getfloat('pid_Kp', minval=0.)
-            self.Ki = config.getfloat('pid_Ki', minval=0.)
-            self.Kd = config.getfloat('pid_Kd', minval=0.)
         self.mcu_vstepper = MCU_virtual_stepper(
             self.a4954.get_mcu(), servo_name, invert_dir, step_dist / 256.)
         force_move = self.printer.try_load_module(config, 'force_move')
@@ -536,11 +545,11 @@ class PrinterMechaduino:
     def get_mcu_stepper(self):
         return self.mcu_vstepper
     def set_enable(self, print_time):
-        if self.mode == "open_loop":
+        mode = self.servo_stepper.get_servo_mode()
+        if mode == "open_loop":
             self.servo_stepper.set_open_loop_mode(print_time)
-        elif self.mode == "hpid":
-            self.servo_stepper.set_hpid_mode(
-                print_time, self.Kp, self.Ki, self.Kd)
+        elif mode == "hpid":
+            self.servo_stepper.set_hpid_mode(print_time)
     def set_disable(self, print_time):
         self.servo_stepper.set_disabled(print_time)
     cmd_SET_TORQUE_MODE_help = "Place servo in torque mode"
@@ -566,8 +575,7 @@ class PrinterMechaduino:
         if self.gcode.get_int('DISABLE', params, 0):
             self.servo_stepper.set_disabled(print_time)
         else:
-            self.servo_stepper.set_hpid_mode(
-                print_time, self.Kp, self.Ki, self.Kd)
+            self.servo_stepper.set_hpid_mode(print_time)
 
 def load_config_prefix(config):
     return PrinterMechaduino(config)
