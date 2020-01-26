@@ -414,11 +414,14 @@ class ServoCalibration:
         if cal is None:
             self.reset_calibration(0.)
             return
+        invert = config.getboolean('invert', False)
         # Parse calibration data
         data = [d.strip() for d in cal.split(',')]
         angles = [float(d) for d in data if d]
         # Calculate and apply calibration data
         calibration = self.get_calibration(angles)
+        if invert:
+            calibration.reverse()
         msg = "Applying Calibration to Servo [%s]:" % (self.name)
         for i, cal in enumerate(calibration):
             msg += "\n" if not i % 8 else " "
@@ -507,6 +510,7 @@ class ServoCalibration:
         configfile = self.printer.lookup_object('configfile')
         configfile.remove_section(self.name)
         configfile.set(self.name, 'calibrate', ''.join(cal_contents))
+        configfile.set(self.name, 'invert', (direction == 1))
         configfile.set(self.name, 'calibrate_start_step', '%d' % (min_step,))
 
 
