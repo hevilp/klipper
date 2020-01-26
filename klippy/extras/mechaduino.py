@@ -218,9 +218,9 @@ class MCU_servo_stepper:
         self.servo_mode = config.getchoice('mode', modes, 'open_loop')
         self.Kp = self.Ki = self.Kd = None
         if self.servo_mode != 'open_loop':
-            self.Kp = config.getfloat('pid_Kp', minval=0.)
-            self.Ki = config.getfloat('pid_Ki', minval=0.)
-            self.Kd = config.getfloat('pid_Kd', minval=0.)
+            self.Kp = config.getfloat('pid_Kp')
+            self.Ki = config.getfloat('pid_Ki')
+            self.Kd = config.getfloat('pid_Kd')
         self.full_steps_per_rotation = config.getint(
             'full_steps_per_rotation', 200, minval=4)
         self.mcu.add_config_cmd(

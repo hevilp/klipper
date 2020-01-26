@@ -18,9 +18,7 @@
     ((val) < (min)) ? (min) :        \
     (((val) > (max)) ? (max) : (val)))
 #define ABS(val) (((val) < 0) ? -(val) : (val))
-#define MIN(a,b) (((a) < (b)) ? (a) : (b))
-#define MAX(a,b) (((a) > (b)) ? (a) : (b))
-#define PID_INIT_SAMPLES 16
+#define PID_INIT_SAMPLES 9
 #define PID_SCALE_SHIFT 10
 // TODO:  TIME_SCALE_SHIFT needs to be calculated based on the clock frequency
 // To get the expected number of nano seconds it takes to run the loop at 6KHz:
@@ -36,6 +34,7 @@ struct pid_control {
     uint8_t init_count;
     int16_t Kp, Ki, Kd;
     int32_t integral;
+    uint32_t phase_offset;
     uint32_t last_phase;
     uint32_t last_position;
     uint32_t last_sample_time;
@@ -96,19 +95,20 @@ servo_stepper_mode_pid_init(struct servo_stepper *ss, uint32_t position)
     ss->pid_ctrl.init_count++;
 
     if (ss->pid_ctrl.init_count >= PID_INIT_SAMPLES) {
-        int32_t deviation = ss->pid_ctrl.integral / (PID_INIT_SAMPLES - 1);
+        int32_t deviation = DIV_ROUND_CLOSEST(
+            ss->pid_ctrl.integral, (PID_INIT_SAMPLES - 1));
         uint32_t avg_pos = ss->pid_ctrl.last_position + deviation;
         uint32_t phase = position_to_phase(ss, avg_pos);
         output("Encoder deviation: %i, average pos: %u, start phase: %u",
             deviation, avg_pos, phase);
-        virtual_stepper_set_position(ss->virtual_stepper, phase);
-        ss->pid_ctrl.last_position = phase;
-        ss->pid_ctrl.last_phase = phase;
+        ss->pid_ctrl.last_position = virtual_stepper_get_position(
+            ss->virtual_stepper);
+        ss->pid_ctrl.phase_offset = phase - ss->pid_ctrl.last_position;
+        ss->pid_ctrl.last_phase = ss->pid_ctrl.last_position;
         ss->pid_ctrl.last_sample_time = timer_read_time();
         ss->pid_ctrl.integral = 0;
         ss->flags = SS_MODE_HPID;
     }
-
 }
 
 static void
@@ -128,7 +128,8 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
         >> TIME_SCALE_SHIFT;
     if (unlikely(time_diff == 0))
         time_diff = 1;
-    uint32_t current_phase = position_to_phase(ss, position);
+    uint32_t current_phase = position_to_phase(ss, position)
+        - ss->pid_ctrl.phase_offset;
     uint32_t desired_pos = virtual_stepper_get_position(ss->virtual_stepper);
     int32_t error = desired_pos - current_phase;
 
@@ -136,8 +137,8 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
     ss->pid_ctrl.integral += error * time_diff;
     ss->pid_ctrl.integral = CONSTRAIN(ss->pid_ctrl.integral, -256, 256);
 
-    if (ABS(error) < PID_ALLOWABLE_ERROR &&
-        desired_pos == ss->pid_ctrl.last_position) {
+    if ((ABS(error) <= PID_ALLOWABLE_ERROR) &&
+        (desired_pos == ss->pid_ctrl.last_position)) {
         // Error is within the allowable threshold and no additional movement
         // has been requested, so we can hold
         a4954_set_phase(ss->stepper_driver, desired_pos, ss->hold_current_scale);
@@ -223,6 +224,7 @@ servo_stepper_set_hpid_mode(struct servo_stepper *ss, uint32_t *args)
     ss->pid_ctrl.Kd = args[6];
     ss->pid_ctrl.init_count = 0;
     ss->pid_ctrl.last_position = 0;
+    ss->pid_ctrl.phase_offset = 0;
     ss->pid_ctrl.last_phase = 0;
     ss->pid_ctrl.integral = 0;
     ss->flags = SS_MODE_PID_INIT;
