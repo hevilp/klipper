@@ -174,9 +174,11 @@ def PrinterStepper(config, units_in_radians=False):
     printer = config.get_printer()
     name = config.get_name()
     # Stepper definition
-    if config.has_section('mechaduino ' + name):
+    short_name = name.split()[-1]
+    if config.has_section('mechaduino ' + short_name):
         # XXX - this is a temporary hack
-        mechaduino = printer.try_load_module(config, 'mechaduino ' + name)
+        mechaduino = printer.try_load_module(
+            config, 'mechaduino ' + short_name)
         mcu_stepper = mechaduino.get_mcu_stepper()
         mcu_stepper.set_units(units_in_radians)
     else:
