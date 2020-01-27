@@ -14,21 +14,23 @@
 #include "virtual_stepper.h" // virtual_stepper_oid_lookup
 #include "sched.h" // shutdown
 
-#define CONSTRAIN(val,min,max)(     \
-    ((val) < (min)) ? (min) :        \
+#define CONSTRAIN(val,min,max)(         \
+    ((val) < (min)) ? (min) :           \
     (((val) > (max)) ? (max) : (val)))
 #define ABS(val) (((val) < 0) ? -(val) : (val))
+
 #define PID_INIT_SAMPLES 9
-#define PID_SCALE_SHIFT 10
+#define PID_SCALE_DIVISOR 1024
 // TODO:  TIME_SCALE_SHIFT needs to be calculated based on the clock frequency
 // To get the expected number of nano seconds it takes to run the loop at 6KHz:
 // ns_per_update = CONFIG_CLOCK_FREQ / 166667
 // Divide by 60 for scale:
-// divisor = ns_per_update / 60
+// divisor = ns_per_update / 10
 // Then we need to get the location of the MSB set to 1
 // Not sure how to get the preprocessor to do this.
-#define TIME_SCALE_SHIFT 17
+#define TIME_SCALE_SHIFT 20
 #define PID_ALLOWABLE_ERROR 16
+#define FULL_STEP 256
 
 struct pid_control {
     uint8_t init_count;
@@ -58,7 +60,8 @@ enum {
 static uint32_t
 position_to_phase(struct servo_stepper *ss, uint32_t position)
 {
-    return DIV_ROUND_CLOSEST(ss->full_steps_per_rotation * position, 256);
+    return DIV_ROUND_CLOSEST(
+        ss->full_steps_per_rotation * position, FULL_STEP);
 }
 
 static void
@@ -86,7 +89,7 @@ servo_stepper_mode_pid_init(struct servo_stepper *ss, uint32_t position)
         // Temporarily store the difference in current position in the integral, since
         // it is a signed integer
         int32_t pos_diff = position - ss->pid_ctrl.last_position;
-        if (ABS(pos_diff) > 256)
+        if (ABS(pos_diff) > FULL_STEP)
             shutdown("Encoder Variance too large!  Check your calibration"
                 " and magnet position.");
         ss->pid_ctrl.integral += pos_diff;
@@ -124,10 +127,8 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
     // the stepper phase current
 
     uint32_t sample_time = timer_read_time();
-    uint32_t time_diff = (sample_time - ss->pid_ctrl.last_sample_time)
-        >> TIME_SCALE_SHIFT;
-    if (unlikely(time_diff == 0))
-        time_diff = 1;
+    uint32_t time_diff = ((sample_time - ss->pid_ctrl.last_sample_time)
+        >> TIME_SCALE_SHIFT) + 1;
     uint32_t current_phase = position_to_phase(ss, position)
         - ss->pid_ctrl.phase_offset;
     uint32_t desired_pos = virtual_stepper_get_position(ss->virtual_stepper);
@@ -135,7 +136,8 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
 
     // Calculate the i-term;
     ss->pid_ctrl.integral += error * time_diff;
-    ss->pid_ctrl.integral = CONSTRAIN(ss->pid_ctrl.integral, -256, 256);
+    ss->pid_ctrl.integral = CONSTRAIN(
+        ss->pid_ctrl.integral, -FULL_STEP, FULL_STEP);
 
     if ((ABS(error) <= PID_ALLOWABLE_ERROR) &&
         (desired_pos == ss->pid_ctrl.last_position)) {
@@ -146,9 +148,9 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
         // Enter the PID Loop
         int32_t phase_diff = current_phase - ss->pid_ctrl.last_phase;
         int32_t co = ((ss->pid_ctrl.Kp * error) +
-            (ss->pid_ctrl.Ki * ss->pid_ctrl.integral) -
-            (ss->pid_ctrl.Kd * phase_diff / time_diff)) >> PID_SCALE_SHIFT;
-        co = CONSTRAIN(co, -256, 256);
+            (ss->pid_ctrl.Ki * ss->pid_ctrl.integral) +
+            (ss->pid_ctrl.Kd * phase_diff / time_diff)) / PID_SCALE_DIVISOR;
+        co = CONSTRAIN(co, -FULL_STEP, FULL_STEP);
         uint32_t cur_scale = ((ABS(co) * (ss->run_current_scale -
             ss->hold_current_scale)) >> 8) + ss->hold_current_scale;
         a4954_set_phase(ss->stepper_driver, current_phase + co, cur_scale);
