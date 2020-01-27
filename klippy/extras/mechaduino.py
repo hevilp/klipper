@@ -229,7 +229,7 @@ class MCU_servo_stepper:
                 self.oid, stepper_driver.get_oid(), virtual_stepper.get_oid(),
                 self.full_steps_per_rotation))
         # Commands
-        self.set_mode_cmd = None
+        self.set_mode_cmd = self.get_stats_cmd = None
         self.mcu.register_config_callback(self._build_config)
     def get_oid(self):
         return self.oid
@@ -240,6 +240,8 @@ class MCU_servo_stepper:
         self.set_mode_cmd = self.mcu.lookup_command(
             "servo_stepper_set_mode oid=%c mode=%c run_current_scale=%u"
             " flex=%u kp=%hi ki=%hi kd=%hi", cq=cmd_queue)
+        self.get_stats_cmd = self.mcu.lookup_command(
+            "servo_stepper_get_stats oid=%c", cq=cmd_queue)
     def set_disabled(self, print_time):
         clock = self.mcu.print_time_to_clock(print_time)
         self.set_mode_cmd.send(
@@ -275,6 +277,10 @@ class MCU_servo_stepper:
         return old_mode
     def get_servo_mode(self):
         return self.servo_mode
+    def get_servo_stats(self):
+        params = self.get_stats_cmd.send_with_response(
+            [self.oid], response='servo_stepper_stats', response_oid=self.oid)
+        return (params['error'],)
 
 # SPI controlled hall position sensor
 class MCU_spi_position:
@@ -338,7 +344,7 @@ class MCU_spi_position:
         params = self.query_pos_cmd.send_with_response(
             [self.oid], response='spi_position_result', response_oid=self.oid)
         if params is not None:
-            return params['position']
+            return params['position'], params['errors']
         else:
             return None
     def apply_calibration(self, print_time, calibration):
@@ -574,9 +580,13 @@ class PrinterMechaduino:
     def cmd_GET_SERVO_POSITION(self, params):
         realtime_pos = self.mcu_vstepper.get_realtime_position()
         enc_pos = self.spi_position.get_position()
+        servo_stats = self.servo_stepper.get_servo_stats()
         self.gcode.respond_info(
-            "Stepper Position: %d, Encoder Position: %d" %
-            (realtime_pos, enc_pos))
+            "Stepper Position: %d\n"
+            "Encoder Position: %d\n"
+            "Encoder Errors: %d\n"
+            "Servo Error: %d" %
+            (realtime_pos, enc_pos[0], enc_pos[1], servo_stats[0]))
     def cmd_TEST_PID_INIT(self, params):
         toolhead = self.printer.lookup_object('toolhead')
         print_time = toolhead.get_last_move_time()

@@ -271,3 +271,13 @@ DECL_COMMAND(command_servo_stepper_set_mode,
              "servo_stepper_set_mode oid=%c mode=%c run_current_scale=%u"
              " flex=%u kp=%hi ki=%hi kd=%hi");
 
+void
+command_servo_stepper_get_stats(uint32_t *args)
+{
+    uint8_t oid = args[0];
+    struct servo_stepper *ss = servo_stepper_oid_lookup(oid);
+    sendf("servo_stepper_stats oid=%c error=%i", oid, ss->pid_ctrl.error);
+
+}
+DECL_COMMAND(command_servo_stepper_get_stats,
+             "servo_stepper_get_stats oid=%c");
