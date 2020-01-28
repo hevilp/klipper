@@ -127,35 +127,36 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
     // the stepper phase current
 
     uint32_t sample_time = timer_read_time();
-    uint32_t time_diff = ((sample_time - ss->pid_ctrl.last_sample_time)
-        >> TIME_SCALE_SHIFT) + 1;
+    uint32_t time_diff = (sample_time - ss->pid_ctrl.last_sample_time)
+        >> TIME_SCALE_SHIFT;
+    time_diff = (time_diff == 0) ? 1 : time_diff;
     uint32_t stp_pos = virtual_stepper_get_position(ss->virtual_stepper);
-    // TODO:  Check the math below to make sure the cast works correctly
     int32_t measured_diff = (int32_t)((position - ss->pid_ctrl.last_enc_pos)
         * ss->full_steps_per_rotation) / FULL_STEP;
     int32_t move_diff = stp_pos - ss->pid_ctrl.last_stp_pos;
     ss->pid_ctrl.error += move_diff - measured_diff;
 
     // Calculate the i-term;
-    ss->pid_ctrl.integral += ss->pid_ctrl.error * time_diff;
+    ss->pid_ctrl.integral += ss->pid_ctrl.error * (int32_t)time_diff;
     ss->pid_ctrl.integral = CONSTRAIN(
         ss->pid_ctrl.integral, -FULL_STEP, FULL_STEP);
 
-    if ((ABS(ss->pid_ctrl.error) <= PID_ALLOWABLE_ERROR) && !move_diff) {
+    //if ((ABS(ss->pid_ctrl.error) <= PID_ALLOWABLE_ERROR)) {
         // Error is within the allowable threshold and no additional movement
         // has been requested, so we can hold
-        a4954_hold(ss->stepper_driver, ss->hold_current_scale);
-    } else {
+        //a4954_hold(ss->stepper_driver, ss->hold_current_scale);
+   //} else {
         // Enter the PID Loop
         int32_t co = ((ss->pid_ctrl.Kp * ss->pid_ctrl.error) +
             (ss->pid_ctrl.Ki * ss->pid_ctrl.integral) -
-            (ss->pid_ctrl.Kd * measured_diff / time_diff)) / PID_SCALE_DIVISOR;
+            (ss->pid_ctrl.Kd * measured_diff / (int32_t)time_diff)) /
+            PID_SCALE_DIVISOR;
         co = CONSTRAIN(co, -FULL_STEP, FULL_STEP);
         uint32_t cur_scale = ((ABS(co) * (ss->run_current_scale -
-            ss->hold_current_scale)) >> 8) + ss->hold_current_scale;
+            ss->hold_current_scale)) / FULL_STEP) + ss->hold_current_scale;
         uint32_t phase = stp_pos - ss->pid_ctrl.error + co;
         a4954_move_to_phase(ss->stepper_driver, phase, cur_scale);
-    }
+    //}
 
     ss->pid_ctrl.last_enc_pos = position;
     ss->pid_ctrl.last_stp_pos = stp_pos;

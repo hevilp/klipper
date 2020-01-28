@@ -45,7 +45,8 @@ class MCU_a4954:
         self.current_factor = 10. * sense_resistor / vref
         self.max_current = config.getfloat('current', above=0., maxval=2.)
         self.hold_current = config.getfloat(
-            'hold_current', self.max_current, above=0., maxval=2.)
+            'hold_current', self.max_current, above=0.,
+            maxval=self.max_current)
         self.pwm_max = 0.
         self.mcu.register_config_callback(self._build_config)
     def _build_config(self):
