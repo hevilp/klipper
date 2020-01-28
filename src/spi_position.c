@@ -174,7 +174,11 @@ spi_position_handle_AS5047D(struct spi_position *sp)
     if (value & (1 << 14)) {
         // error bit set
         sp->errors++;
-        return;
+        // TODO:  I should probably make this into a loop where
+        // the request is attempted several times.  Generally
+        // we should not get an error, but if we do we don't
+        // want to pass it to do_update, we should probably
+        // shutdown instead
     }
     spi_position_do_update(sp, (value << 2) & 0xffff);
 }

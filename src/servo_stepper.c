@@ -68,7 +68,9 @@ static void
 servo_stepper_mode_open_loop(struct servo_stepper *ss, uint32_t position)
 {
     uint32_t vs_position = virtual_stepper_get_position(ss->virtual_stepper);
-    a4954_set_phase(ss->stepper_driver, vs_position, ss->run_current_scale);
+    //a4954_set_phase(ss->stepper_driver, vs_position, ss->run_current_scale);
+    a4954_move_to_phase(ss->stepper_driver, vs_position,
+        ss->run_current_scale);
 }
 
 static void
@@ -142,7 +144,7 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
     if ((ABS(ss->pid_ctrl.error) <= PID_ALLOWABLE_ERROR) && !move_diff) {
         // Error is within the allowable threshold and no additional movement
         // has been requested, so we can hold
-        a4954_set_phase(ss->stepper_driver, stp_pos, ss->hold_current_scale);
+        a4954_hold(ss->stepper_driver, ss->hold_current_scale);
     } else {
         // Enter the PID Loop
         int32_t co = ((ss->pid_ctrl.Kp * ss->pid_ctrl.error) +
@@ -152,7 +154,7 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
         uint32_t cur_scale = ((ABS(co) * (ss->run_current_scale -
             ss->hold_current_scale)) >> 8) + ss->hold_current_scale;
         uint32_t phase = stp_pos - ss->pid_ctrl.error + co;
-        a4954_set_phase(ss->stepper_driver, phase, cur_scale);
+        a4954_move_to_phase(ss->stepper_driver, phase, cur_scale);
     }
 
     ss->pid_ctrl.last_enc_pos = position;

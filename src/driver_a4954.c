@@ -15,8 +15,11 @@ struct a4954 {
     struct gpio_out in1, in2, in3, in4;
     struct gpio_pwm vref12, vref34;
     uint32_t last_phase;
+    uint8_t pin_state;
     uint8_t flags;
 };
+
+enum { PIN_STATE_IN1_IN2 = (1 << 0), PIN_STATE_IN3_IN4 = (1 << 1)};
 
 enum { AF_ENABLED = 1 };
 
@@ -52,6 +55,27 @@ lookup_sine(uint32_t phase, uint32_t scale)
     return DIV_ROUND_CLOSEST(scale * sin, 1024);
 }
 
+static void
+set_pins_in1_in2(struct a4954 *a, uint8_t state)
+{
+    if ((a->pin_state & PIN_STATE_IN1_IN2) ^ state) {
+        gpio_out_toggle_noirq(a->in1);
+        gpio_out_toggle_noirq(a->in2);
+        a->pin_state ^= PIN_STATE_IN1_IN2;
+    }
+}
+
+static void
+set_pins_in3_in4(struct a4954 *a, uint8_t state)
+{
+    state = state << 1;
+    if ((a->pin_state & PIN_STATE_IN3_IN4) ^ state) {
+        gpio_out_toggle_noirq(a->in3);
+        gpio_out_toggle_noirq(a->in4);
+        a->pin_state ^= PIN_STATE_IN3_IN4;
+    }
+}
+
 // Set the phase and current of the a4954 driver. Caller must disable irqs.
 void
 a4954_set_phase(struct a4954 *a, uint32_t phase, uint32_t scale)
@@ -75,11 +99,13 @@ a4954_set_phase(struct a4954 *a, uint32_t phase, uint32_t scale)
         struct gpio_out in1 = a->in1, in2 = a->in2;
         gpio_out_toggle_noirq(in1);
         gpio_out_toggle_noirq(in2);
+        a->pin_state ^= PIN_STATE_IN1_IN2;
     }
     if ((phase_xor + 256) & 0x200) {
         struct gpio_out in3 = a->in3, in4 = a->in4;
         gpio_out_toggle_noirq(in3);
         gpio_out_toggle_noirq(in4);
+        a->pin_state ^= PIN_STATE_IN3_IN4;
     }
 }
 
@@ -100,6 +126,7 @@ a4954_disable(struct a4954 *a)
     gpio_out_write(in3, 0);
     gpio_out_write(in4, 0);
 
+    a->pin_state = 0;
     a->flags = 0;
 }
 
@@ -110,12 +137,14 @@ a4954_enable(struct a4954 *a)
         // Already enabled
         return;
     a->flags = AF_ENABLED;
+    a->pin_state = 0;
 
     uint32_t phase = a->last_phase;
     struct gpio_out in1 = a->in1, in2 = a->in2;
     if (phase & 0x200) {
         gpio_out_write(in1, 1);
         gpio_out_write(in2, 0);
+        a->pin_state |= PIN_STATE_IN1_IN2;
     } else {
         gpio_out_write(in1, 0);
         gpio_out_write(in2, 1);
@@ -124,11 +153,57 @@ a4954_enable(struct a4954 *a)
     if ((phase + 256) & 0x200) {
         gpio_out_write(in3, 1);
         gpio_out_write(in4, 0);
+        a->pin_state |= PIN_STATE_IN3_IN4;
     } else {
         gpio_out_write(in3, 0);
         gpio_out_write(in4, 1);
     }
 }
+
+// Note:  This is an alternative implementation to "set_phase", which
+// toggles the "in1 - in4" pins without knowledge of the previous phase.
+// This is necessary for closed loop operation.
+void
+a4954_move_to_phase(struct a4954 *a, uint32_t phase, uint32_t scale)
+{
+    a->last_phase = phase;
+
+    // Calculate new coil power
+    uint32_t coil1_pow = lookup_sine(phase, scale);
+    uint32_t coil2_pow = lookup_sine(phase + 256, scale);
+
+    // Apply update
+    struct gpio_pwm vref12 = a->vref12, vref34 = a->vref34;
+    gpio_pwm_write(vref12, coil1_pow);
+    gpio_pwm_write(vref34, coil2_pow);
+
+    // If sine is negative, in1 is high, in2 is low
+    set_pins_in1_in2(a, !!(phase & 0x200));
+
+    // If cosine is negative, in3 is high, in4 is low
+    set_pins_in3_in4(a, !!((phase + 256) & 0x200));
+}
+
+void
+a4954_hold(struct a4954 *a, uint32_t scale)
+{
+    uint32_t phase = a->last_phase;
+
+    // Calculate new coil power
+    uint32_t coil1_pow = lookup_sine(phase, scale);
+    uint32_t coil2_pow = lookup_sine(phase + 256, scale);
+
+    // Apply update
+    struct gpio_pwm vref12 = a->vref12, vref34 = a->vref34;
+    gpio_pwm_write(vref12, coil1_pow);
+    gpio_pwm_write(vref34, coil2_pow);
+}
+
+/*void
+a4954_reset(struct a4954 *a)
+{
+
+}*/
 
 void
 command_config_a4954(uint32_t *args)
