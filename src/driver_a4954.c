@@ -199,12 +199,6 @@ a4954_hold(struct a4954 *a, uint32_t scale)
     gpio_pwm_write(vref34, coil2_pow);
 }
 
-/*void
-a4954_reset(struct a4954 *a)
-{
-
-}*/
-
 void
 command_config_a4954(uint32_t *args)
 {

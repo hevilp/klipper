@@ -144,11 +144,10 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
     ss->pid_ctrl.integral = CONSTRAIN(
         ss->pid_ctrl.integral, -FULL_STEP, FULL_STEP);
 
-   // if ((ABS(ss->pid_ctrl.error) <= PID_ALLOWABLE_ERROR)) {
-        // Error is within the allowable threshold and no additional movement
-        // has been requested, so we can hold
-  //      a4954_hold(ss->stepper_driver, ss->hold_current_scale);
-   //} else {
+    if (ABS(ss->pid_ctrl.error) <= PID_ALLOWABLE_ERROR) {
+        // Error is within the allowable threshold so we can hold
+        a4954_hold(ss->stepper_driver, ss->hold_current_scale);
+    } else {
         // Enter the PID Loop
         int32_t co = ((ss->pid_ctrl.Kp * ss->pid_ctrl.error) +
             (ss->pid_ctrl.Ki * ss->pid_ctrl.integral) -
@@ -158,7 +157,7 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
         uint32_t cur_scale = ((ABS(co) * (ss->run_current_scale -
             ss->hold_current_scale)) / FULL_STEP) + ss->hold_current_scale;
         a4954_move_to_phase(ss->stepper_driver, phase + co, cur_scale);
-   // }
+    }
 
     ss->pid_ctrl.last_phase = phase;
     ss->pid_ctrl.last_stp_pos = stp_pos;
@@ -281,7 +280,9 @@ command_servo_stepper_get_stats(uint32_t *args)
 {
     uint8_t oid = args[0];
     struct servo_stepper *ss = servo_stepper_oid_lookup(oid);
-    sendf("servo_stepper_stats oid=%c error=%i", oid, ss->pid_ctrl.error);
+    int32_t err = ss->pid_ctrl.error;
+    sendf("servo_stepper_stats oid=%c error=%u err_dir=%c",
+        oid, ABS(err), !!(err & 0x80000000));
 
 }
 DECL_COMMAND(command_servo_stepper_get_stats,
