@@ -40,7 +40,7 @@ struct pid_control {
     int32_t integral;
     int32_t error;
     uint32_t encoder_offset;
-    uint32_t last_phase;
+    uint32_t last_enc_pos;
     uint32_t last_stp_pos;
     uint32_t last_sample_time;
 
@@ -95,9 +95,9 @@ servo_stepper_mode_pid_init(struct servo_stepper *ss, uint32_t position)
 {
     if (ss->pid_ctrl.init_count == 0) {
         // Set the initial reference position
-        ss->pid_ctrl.last_phase = position;
+        ss->pid_ctrl.last_enc_pos = position;
     } else {
-        int32_t pos_diff = position - ss->pid_ctrl.last_phase;
+        int32_t pos_diff = position - ss->pid_ctrl.last_enc_pos;
         if (ABS(pos_diff) > FULL_STEP)
             shutdown("Encoder Variance too large!  Check your calibration"
                 " and magnet position.");
@@ -111,11 +111,11 @@ servo_stepper_mode_pid_init(struct servo_stepper *ss, uint32_t position)
     if (ss->pid_ctrl.init_count >= PID_INIT_SAMPLES) {
         int32_t deviation = DIV_ROUND_CLOSEST(
             ss->pid_ctrl.error, (PID_INIT_SAMPLES - 1));
-        uint32_t avg_pos = ss->pid_ctrl.last_phase + deviation;
+        uint32_t avg_pos = ss->pid_ctrl.last_enc_pos + deviation;
         output("Encoder deviation: %i, average pos: %u",
             deviation, avg_pos);
         ss->pid_ctrl.error = 0;
-        ss->pid_ctrl.last_phase = 0;
+        ss->pid_ctrl.last_enc_pos = 0;
         ss->pid_ctrl.encoder_offset= avg_pos;
         ss->pid_ctrl.last_stp_pos = virtual_stepper_get_position(
             ss->virtual_stepper);
@@ -140,11 +140,17 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
     uint32_t time_diff = (sample_time - ss->pid_ctrl.last_sample_time)
         >> TIME_SCALE_SHIFT;
     time_diff = (time_diff == 0) ? 1 : time_diff;
-    uint32_t phase = position_to_phase(
-        ss, position - ss->pid_ctrl.encoder_offset);
+    position -= ss->pid_ctrl.encoder_offset;
+    uint32_t phase = position_to_phase(ss, position);
     uint32_t stp_pos = virtual_stepper_get_position(ss->virtual_stepper);
-    int32_t phase_diff = phase - ss->pid_ctrl.last_phase;
+    // TODO:  Check the encoder diff to phase diff math below
+    uint32_t enc_diff = position - ss->pid_ctrl.last_enc_pos;
     int32_t move_diff = stp_pos - ss->pid_ctrl.last_stp_pos;
+    int32_t phase_diff;
+    if (enc_diff & 0x8000000)
+        phase_diff = -position_to_phase(ss, -enc_diff);
+    else
+        phase_diff = position_to_phase(ss, enc_diff);
     ss->pid_ctrl.error += move_diff - phase_diff;
 
     // Calculate the i-term;
@@ -177,16 +183,15 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
 
 #ifdef DEBUG
     if (ss->pid_ctrl.debug_flag) {
-        output("error: %i, holding: %c, phase: %u, last_phase: %u",
-                ss->pid_ctrl.error, holding, phase, ss->pid_ctrl.last_phase);
+        output("error: %i, holding: %c, phase: %u, phase diff: %u, time diff: %u",
+                ss->pid_ctrl.error, holding, phase, phase_diff, time_diff);
         ss->pid_ctrl.debug_flag = 0;
     }
 #endif
 
-    ss->pid_ctrl.last_phase = phase;
+    ss->pid_ctrl.last_enc_pos = position;
     ss->pid_ctrl.last_stp_pos = stp_pos;
     ss->pid_ctrl.last_sample_time = sample_time;
-
 }
 
 void
@@ -253,7 +258,7 @@ servo_stepper_set_hpid_mode(struct servo_stepper *ss, uint32_t *args)
     ss->pid_ctrl.Ki = args[5];
     ss->pid_ctrl.Kd = args[6];
     ss->pid_ctrl.init_count = 0;
-    ss->pid_ctrl.last_phase = 0;
+    ss->pid_ctrl.last_enc_pos = 0;
     ss->pid_ctrl.last_stp_pos = 0;
     ss->pid_ctrl.error = 0;
     ss->pid_ctrl.integral = 0;
