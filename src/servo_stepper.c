@@ -28,9 +28,16 @@
 // divisor = ns_per_update / 10
 // Then we need to get the location of the MSB set to 1
 // Not sure how to get the preprocessor to do this.
-#define TIME_SCALE_SHIFT 20
+#define TIME_SCALE_SHIFT 19
 #define PID_ALLOWABLE_ERROR 16
 #define FULL_STEP 256
+
+// The postion to phase conversion results in 24-bit resolution.  When
+// the result overflows we need to be able to compensate with a bias.
+#define PHASE_BIAS 0x01000000
+#define PHASE_MASK 0x00C00000
+
+#define DEBUG
 
 struct pid_control {
     uint8_t init_count;
@@ -38,9 +45,13 @@ struct pid_control {
     int32_t integral;
     int32_t error;
     uint32_t encoder_offset;
-    uint32_t last_enc_pos;
+    uint32_t last_phase;
     uint32_t last_stp_pos;
     uint32_t last_sample_time;
+
+#ifdef DEBUG
+    uint8_t query_flag;
+#endif
 };
 
 struct servo_stepper {
@@ -87,9 +98,9 @@ servo_stepper_mode_pid_init(struct servo_stepper *ss, uint32_t position)
 {
     if (ss->pid_ctrl.init_count == 0) {
         // Set the initial reference position
-        ss->pid_ctrl.last_enc_pos = position;
+        ss->pid_ctrl.last_phase = position;
     } else {
-        int32_t pos_diff = position - ss->pid_ctrl.last_enc_pos;
+        int32_t pos_diff = position - ss->pid_ctrl.last_phase;
         if (ABS(pos_diff) > FULL_STEP)
             shutdown("Encoder Variance too large!  Check your calibration"
                 " and magnet position.");
@@ -103,11 +114,11 @@ servo_stepper_mode_pid_init(struct servo_stepper *ss, uint32_t position)
     if (ss->pid_ctrl.init_count >= PID_INIT_SAMPLES) {
         int32_t deviation = DIV_ROUND_CLOSEST(
             ss->pid_ctrl.error, (PID_INIT_SAMPLES - 1));
-        uint32_t avg_pos = ss->pid_ctrl.last_enc_pos + deviation;
+        uint32_t avg_pos = ss->pid_ctrl.last_phase + deviation;
         output("Encoder deviation: %i, average pos: %u",
             deviation, avg_pos);
         ss->pid_ctrl.error = 0;
-        ss->pid_ctrl.last_enc_pos = 0;
+        ss->pid_ctrl.last_phase = 0;
         ss->pid_ctrl.encoder_offset= avg_pos;
         ss->pid_ctrl.last_stp_pos = virtual_stepper_get_position(
             ss->virtual_stepper);
@@ -134,15 +145,18 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
     time_diff = (time_diff == 0) ? 1 : time_diff;
     position -= ss->pid_ctrl.encoder_offset;
     uint32_t phase = position_to_phase(ss, position);
-    uint32_t stp_pos = virtual_stepper_get_position(ss->virtual_stepper);
-    // TODO:  Check the encoder diff to phase diff math below
-    uint32_t enc_diff = position - ss->pid_ctrl.last_enc_pos;
-    int32_t move_diff = stp_pos - ss->pid_ctrl.last_stp_pos;
+    uint32_t last_phase = ss->pid_ctrl.last_phase;
     int32_t phase_diff;
-    if (enc_diff & 0x8000000)
-        phase_diff = -position_to_phase(ss, -enc_diff);
-    else
-        phase_diff = position_to_phase(ss, enc_diff);
+    if ((phase ^ last_phase) & PHASE_MASK) {
+        // Handle the integer wraparound for cases where
+        // the phase resolution is less than 32-bit
+        phase_diff = phase - (PHASE_BIAS - last_phase);
+    } else {
+        phase_diff = phase - last_phase;
+    }
+
+    uint32_t stp_pos = virtual_stepper_get_position(ss->virtual_stepper);
+    int32_t move_diff = stp_pos - ss->pid_ctrl.last_stp_pos;
     ss->pid_ctrl.error += move_diff - phase_diff;
 
     // Calculate the i-term;
@@ -160,7 +174,15 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
         ss->hold_current_scale)) / FULL_STEP) + ss->hold_current_scale;
     a4954_move_to_phase(ss->stepper_driver, phase + co, cur_scale);
 
-    ss->pid_ctrl.last_enc_pos = position;
+#ifdef DEBUG
+    if (ss->pid_ctrl.query_flag) {
+        output("phase_diff: %i, time_diff: %u, current_clock: %u, last_clock: %u",
+            phase_diff, time_diff, sample_time, ss->pid_ctrl.last_sample_time);
+        ss->pid_ctrl.query_flag = 0;
+    }
+#endif
+
+    ss->pid_ctrl.last_phase = phase;
     ss->pid_ctrl.last_stp_pos = stp_pos;
     ss->pid_ctrl.last_sample_time = sample_time;
 }
@@ -229,7 +251,7 @@ servo_stepper_set_hpid_mode(struct servo_stepper *ss, uint32_t *args)
     ss->pid_ctrl.Ki = args[5];
     ss->pid_ctrl.Kd = args[6];
     ss->pid_ctrl.init_count = 0;
-    ss->pid_ctrl.last_enc_pos = 0;
+    ss->pid_ctrl.last_phase = 0;
     ss->pid_ctrl.last_stp_pos = 0;
     ss->pid_ctrl.error = 0;
     ss->pid_ctrl.integral = 0;
@@ -283,6 +305,9 @@ command_servo_stepper_get_stats(uint32_t *args)
     struct servo_stepper *ss = servo_stepper_oid_lookup(oid);
     irq_disable();
     int32_t err = ss->pid_ctrl.error;
+#ifdef DEBUG
+    ss->pid_ctrl.query_flag = 1;
+#endif
     irq_enable();
     sendf("servo_stepper_stats oid=%c error=%i", oid, err);
 
