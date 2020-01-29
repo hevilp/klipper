@@ -200,6 +200,13 @@ a4954_hold(struct a4954 *a, uint32_t scale)
 }
 
 void
+a4954_reset(struct a4954 *a) {
+    a4954_disable(a);
+    a->last_phase = 0;
+    a4954_enable(a);
+}
+
+void
 command_config_a4954(uint32_t *args)
 {
     struct gpio_out in1 = gpio_out_setup(args[1], 0);
