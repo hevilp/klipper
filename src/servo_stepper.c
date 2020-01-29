@@ -19,17 +19,15 @@
     (((val) > (max)) ? (max) : (val)))
 #define ABS(val) (((val) < 0) ? -(val) : (val))
 
-#define PID_INIT_HOLD 1500
-#define PID_INIT_SAMPLES 8
+#define PID_INIT_HOLD 2000
+#define PID_INIT_SAMPLES 20
 #define PID_SCALE_DIVISOR 1024
 // TODO:  TIME_SCALE_SHIFT needs to be calculated based on the clock frequency
 // To get the expected number of nano seconds it takes to run the loop at 6KHz:
-// ns_per_update = CONFIG_CLOCK_FREQ / 166667
-// Divide by 60 for scale:
-// divisor = ns_per_update / 10
+// us_per_update = Clock Ticks * CONFIG_CLOCK_FREQ / 1000000
 // Then we need to get the location of the MSB set to 1
 // Not sure how to get the preprocessor to do this.
-#define TIME_SCALE_SHIFT 19
+#define TIME_SCALE_SHIFT 10
 #define PID_ALLOWABLE_ERROR 16
 #define FULL_STEP 256
 
@@ -62,6 +60,7 @@ struct servo_stepper {
     uint32_t full_steps_per_rotation;
     uint32_t excite_angle;
     uint32_t run_current_scale, hold_current_scale;
+    uint16_t step_multiplier;
     uint8_t flags;
 };
 
@@ -82,7 +81,7 @@ servo_stepper_mode_open_loop(struct servo_stepper *ss, uint32_t position)
 {
     uint32_t vs_position = virtual_stepper_get_position(ss->virtual_stepper);
     //a4954_set_phase(ss->stepper_driver, vs_position, ss->run_current_scale);
-    a4954_move_to_phase(ss->stepper_driver, vs_position,
+    a4954_move_to_phase(ss->stepper_driver, vs_position * ss->step_multiplier,
         ss->run_current_scale);
 }
 
@@ -97,16 +96,19 @@ servo_stepper_mode_torque_update(struct servo_stepper *ss, uint32_t position)
 static void
 servo_stepper_mode_pid_init(struct servo_stepper *ss, uint32_t position)
 {
-    if (ss->pid_ctrl.error) {
+    if (ss->pid_ctrl.last_phase) {
         // Hold for a period of time while the stepper position
         // stabilizes after its energized.  This should be roughly
         // .25 seconds.
-        ss->pid_ctrl.error--;
+        ss->pid_ctrl.last_phase--;
         return;
     }
 
+    // Start the computing the mean of encoder positions.  The mean is
+    // stored in the encoder_offset member of the struct.
+
     if (ss->pid_ctrl.init_count == 0) {
-        // Set the initial reference position
+        // Set the initial reference position for the mean
         ss->pid_ctrl.encoder_offset = position;
     } else {
         // calculate the moving average
@@ -123,7 +125,6 @@ servo_stepper_mode_pid_init(struct servo_stepper *ss, uint32_t position)
                 " and magnet position.");
 
         pos_diff = DIV_ROUND_CLOSEST(pos_diff, ss->pid_ctrl.init_count + 1);
-
         if (is_negative)
             ss->pid_ctrl.encoder_offset -= pos_diff;
         else
@@ -173,7 +174,8 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
     }
 
     uint32_t stp_pos = virtual_stepper_get_position(ss->virtual_stepper);
-    int32_t move_diff = stp_pos - ss->pid_ctrl.last_stp_pos;
+    int32_t move_diff = (stp_pos - ss->pid_ctrl.last_stp_pos) *
+        ss->step_multiplier;
     ss->pid_ctrl.error += move_diff - phase_diff;
 
     // Calculate the i-term;
@@ -226,10 +228,11 @@ command_config_servo_stepper(uint32_t *args)
     ss->stepper_driver = a;
     ss->virtual_stepper = vs;
     ss->full_steps_per_rotation = args[3];
+    ss->step_multiplier = args[4];
 }
 DECL_COMMAND(command_config_servo_stepper,
              "config_servo_stepper oid=%c driver_oid=%c stepper_oid=%c"
-             " full_steps_per_rotation=%u");
+             " full_steps_per_rotation=%u step_multiplier=%hu");
 
 struct servo_stepper *
 servo_stepper_oid_lookup(uint8_t oid)
@@ -250,7 +253,8 @@ static void
 servo_stepper_set_open_loop_mode(struct servo_stepper *ss, uint32_t *args)
 {
     irq_disable();
-    a4954_enable(ss->stepper_driver);
+    a4954_reset(ss->stepper_driver);
+    virtual_stepper_set_position(ss->virtual_stepper, 0);
     ss->flags = SS_MODE_OPEN_LOOP;
     ss->run_current_scale = args[2];
     ss->hold_current_scale = args[3];
@@ -269,9 +273,9 @@ servo_stepper_set_hpid_mode(struct servo_stepper *ss, uint32_t *args)
     ss->pid_ctrl.Ki = args[5];
     ss->pid_ctrl.Kd = args[6];
     ss->pid_ctrl.init_count = 0;
-    ss->pid_ctrl.last_phase = 0;
+    ss->pid_ctrl.last_phase = PID_INIT_HOLD;
     ss->pid_ctrl.last_stp_pos = 0;
-    ss->pid_ctrl.error = PID_INIT_HOLD;
+    ss->pid_ctrl.error = 0;
     ss->pid_ctrl.integral = 0;
     ss->flags = SS_MODE_PID_INIT;
     irq_enable();

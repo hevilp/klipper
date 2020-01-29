@@ -217,18 +217,20 @@ class MCU_servo_stepper:
         self.oid = self.mcu.create_oid()
         modes = {'open_loop': 'open_loop', 'hpid': 'hpid'}
         self.servo_mode = config.getchoice('mode', modes, 'open_loop')
-        self.Kp = self.Ki = self.Kd = None
-        if self.servo_mode != 'open_loop':
-            self.Kp = config.getfloat('pid_Kp')
-            self.Ki = config.getfloat('pid_Ki')
-            self.Kd = config.getfloat('pid_Kd')
+        steps = {'256': 0, '128': 1, '64': 2, '32': 3, '16': 4,
+                 '8': 5, '4': 6, '2': 7, '1': 8}
+        microsteps = config.getchoice('microsteps', steps)
+        self.step_multiplier = 1 << microsteps
+        self.Kp = config.getfloat('pid_Kp', 1.0)
+        self.Ki = config.getfloat('pid_Ki', .0)
+        self.Kd = config.getfloat('pid_Kd', .0)
         self.full_steps_per_rotation = config.getint(
             'full_steps_per_rotation', 200, minval=4)
         self.mcu.add_config_cmd(
             "config_servo_stepper oid=%d driver_oid=%d stepper_oid=%d"
-            " full_steps_per_rotation=%d" % (
+            " full_steps_per_rotation=%d step_multiplier=%d" % (
                 self.oid, stepper_driver.get_oid(), virtual_stepper.get_oid(),
-                self.full_steps_per_rotation))
+                self.full_steps_per_rotation, self.step_multiplier))
         # Commands
         self.set_mode_cmd = self.get_stats_cmd = None
         self.mcu.register_config_callback(self._build_config)
@@ -452,7 +454,7 @@ class ServoCalibration:
         # Start with a dummy movement
         fmove = self.printer.lookup_object('force_move')
         step_dist = self.mcu_vstepper.get_step_dist()
-        full_step_dist = step_dist * 256
+        full_step_dist = step_dist * self.servo_stepper.step_multiplier
         move_time = 0.100
         move_speed = full_step_dist / move_time
         fmove.manual_move(
@@ -533,7 +535,7 @@ class PrinterMechaduino:
         step_dist = config.getfloat('step_distance', above=0.)
         invert_dir = config.getboolean('invert_direction', False)
         self.mcu_vstepper = MCU_virtual_stepper(
-            self.a4954.get_mcu(), servo_name, invert_dir, step_dist / 256.)
+            self.a4954.get_mcu(), servo_name, invert_dir, step_dist)
         force_move = self.printer.try_load_module(config, 'force_move')
         force_move.register_stepper(self.mcu_vstepper)
         self.servo_stepper = MCU_servo_stepper(config, self.a4954,
