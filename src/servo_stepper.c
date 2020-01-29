@@ -32,6 +32,8 @@
 #define PID_ALLOWABLE_ERROR 16
 #define FULL_STEP 256
 
+#define DEBUG
+
 struct pid_control {
     uint8_t init_count;
     int16_t Kp, Ki, Kd;
@@ -41,6 +43,12 @@ struct pid_control {
     uint32_t last_phase;
     uint32_t last_stp_pos;
     uint32_t last_sample_time;
+
+    // DEBUG STATS TO BE REMOVED
+#ifdef DEBUG
+    uint8_t debug_flag;
+#endif
+
 };
 
 struct servo_stepper {
@@ -144,9 +152,17 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
     ss->pid_ctrl.integral = CONSTRAIN(
         ss->pid_ctrl.integral, -FULL_STEP, FULL_STEP);
 
+    // Temporary variable for debugging
+#ifdef DEBUG
+    uint8_t holding = 0;
+#endif
+
     if (ABS(ss->pid_ctrl.error) <= PID_ALLOWABLE_ERROR) {
         // Error is within the allowable threshold so we can hold
         a4954_hold(ss->stepper_driver, ss->hold_current_scale);
+#ifdef DEBUG
+        holding = 1;
+#endif
     } else {
         // Enter the PID Loop
         int32_t co = ((ss->pid_ctrl.Kp * ss->pid_ctrl.error) +
@@ -159,9 +175,18 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
         a4954_move_to_phase(ss->stepper_driver, phase + co, cur_scale);
     }
 
+#ifdef DEBUG
+    if (ss->pid_ctrl.debug_flag) {
+        output("error: %i, holding: %c, phase: %u, last_phase: %u",
+                ss->pid_ctrl.error, holding, phase, ss->pid_ctrl.last_phase);
+        ss->pid_ctrl.debug_flag = 0;
+    }
+#endif
+
     ss->pid_ctrl.last_phase = phase;
     ss->pid_ctrl.last_stp_pos = stp_pos;
     ss->pid_ctrl.last_sample_time = sample_time;
+
 }
 
 void
@@ -280,9 +305,13 @@ command_servo_stepper_get_stats(uint32_t *args)
 {
     uint8_t oid = args[0];
     struct servo_stepper *ss = servo_stepper_oid_lookup(oid);
+    irq_disable();
     int32_t err = ss->pid_ctrl.error;
-    sendf("servo_stepper_stats oid=%c error=%u err_dir=%c",
-        oid, ABS(err), !!(err & 0x80000000));
+    #ifdef DEBUG
+    ss->pid_ctrl.debug_flag = 1;
+    #endif
+    irq_enable();
+    sendf("servo_stepper_stats oid=%c error=%i", oid, err);
 
 }
 DECL_COMMAND(command_servo_stepper_get_stats,

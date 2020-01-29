@@ -281,7 +281,7 @@ class MCU_servo_stepper:
     def get_servo_stats(self):
         params = self.get_stats_cmd.send_with_response(
             [self.oid], response='servo_stepper_stats', response_oid=self.oid)
-        return (params['error'], params['err_dir'])
+        return (params['error'],)
 
 # SPI controlled hall position sensor
 class MCU_spi_position:
@@ -582,15 +582,12 @@ class PrinterMechaduino:
         realtime_pos = self.mcu_vstepper.get_realtime_position()
         enc_pos = self.spi_position.get_position()
         servo_stats = self.servo_stepper.get_servo_stats()
-        direction = "Negative" if servo_stats[1] else "Positive"
         self.gcode.respond_info(
             "Stepper Position: %d\n"
             "Encoder Position: %d\n"
             "Encoder Errors: %d\n"
-            "Servo Error: %d\n"
-            "Error Direction: %s" %
-            (realtime_pos, enc_pos[0], enc_pos[1], servo_stats[0],
-            direction))
+            "Servo Error: %d" %
+            (realtime_pos, enc_pos[0], enc_pos[1], servo_stats[0]))
     def cmd_TEST_PID_INIT(self, params):
         toolhead = self.printer.lookup_object('toolhead')
         print_time = toolhead.get_last_move_time()
