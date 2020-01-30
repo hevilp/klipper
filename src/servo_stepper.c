@@ -19,6 +19,7 @@
     (((val) > (max)) ? (max) : (val)))
 #define ABS(val) (((val) < 0) ? -(val) : (val))
 
+#define PID_MAX_ERROR 
 #define PID_INIT_HOLD 2000
 #define PID_INIT_SAMPLES 20
 #define PID_SCALE_DIVISOR 1024
@@ -28,7 +29,6 @@
 // Then we need to get the location of the MSB set to 1
 // Not sure how to get the preprocessor to do this.
 #define TIME_SCALE_SHIFT 10
-#define PID_ALLOWABLE_ERROR 16
 #define FULL_STEP 256
 
 // The postion to phase conversion results in 24-bit resolution.  When
@@ -37,7 +37,7 @@
 // The absolute maximum amount of measured phase.  If this amount is
 // exceeded then it is likely due to an overflow (although it could
 // potential be a bad encoder reading)
-#define PHASE_CHANGE_MAX 51200
+#define PHASE_MAX 51200
 
 #define DEBUG
 
@@ -176,8 +176,8 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
     int32_t phase_diff = phase - last_phase;
 
     // Bias the phase difference if the 24-bit phase position overflows
-    int32_t bias = (phase_diff > PHASE_CHANGE_MAX) ? -PHASE_BIAS :
-        ((phase_diff < -PHASE_CHANGE_MAX) ? PHASE_BIAS : 0);
+    int32_t bias = (phase_diff > PHASE_MAX) ? -PHASE_BIAS :
+        ((phase_diff < -PHASE_MAX) ? PHASE_BIAS : 0);
     phase_diff += bias;
 
     uint32_t stp_pos = virtual_stepper_get_position(ss->virtual_stepper);
@@ -185,13 +185,16 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
         ss->step_multiplier;
     ss->pid_ctrl.error += move_diff - phase_diff;
 
+    // Constrain the error to prevent overflow
+    int32_t error = CONSTRAIN(ss->pid_ctrl.error, -PHASE_MAX, PHASE_MAX);
+
     // Calculate the i-term;
-    ss->pid_ctrl.integral += ss->pid_ctrl.error * (int32_t)time_diff;
+    ss->pid_ctrl.integral += error * (int32_t)time_diff;
     ss->pid_ctrl.integral = CONSTRAIN(
         ss->pid_ctrl.integral, -FULL_STEP, FULL_STEP);
 
     // Calc Corrected Output
-    int32_t co = ((ss->pid_ctrl.Kp * ss->pid_ctrl.error) +
+    int32_t co = ((ss->pid_ctrl.Kp * error) +
         (ss->pid_ctrl.Ki * ss->pid_ctrl.integral) -
         (ss->pid_ctrl.Kd * phase_diff / (int32_t)time_diff)) /
         PID_SCALE_DIVISOR;
