@@ -34,6 +34,10 @@
 // The postion to phase conversion results in 24-bit resolution.  When
 // the result overflows we need to be able to compensate with a bias.
 #define PHASE_BIAS 0x01000000
+// The absolute maximum amount of measured phase.  If this amount is
+// exceeded then it is likely due to an overflow (although it could
+// potential be a bad encoder reading)
+#define PHASE_CHANGE_MAX 51200
 
 #define DEBUG
 
@@ -169,15 +173,12 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
     position -= ss->pid_ctrl.encoder_offset;
     uint32_t phase = position_to_phase(ss, position);
     uint32_t last_phase = ss->pid_ctrl.last_phase;
-    int32_t phase_diff;
+    int32_t phase_diff = phase - last_phase;
 
-    if (((phase ^ last_phase) >> 22) == 0x3) {
-        // Handle the integer wraparound for cases where
-        // the phase resolution is less than 32-bit
-        phase_diff = phase - (PHASE_BIAS - last_phase);
-    } else {
-        phase_diff = phase - last_phase;
-    }
+    // Bias the phase difference if the 24-bit phase position overflows
+    int32_t bias = (phase_diff > PHASE_CHANGE_MAX) ? -PHASE_BIAS :
+        ((phase_diff < -PHASE_CHANGE_MAX) ? PHASE_BIAS : 0);
+    phase_diff += bias;
 
     uint32_t stp_pos = virtual_stepper_get_position(ss->virtual_stepper);
     int32_t move_diff = (stp_pos - ss->pid_ctrl.last_stp_pos) *
