@@ -347,7 +347,7 @@ class MCU_spi_position:
         params = self.query_pos_cmd.send_with_response(
             [self.oid], response='spi_position_result', response_oid=self.oid)
         if params is not None:
-            return params['position'], params['errors']
+            return params['position']
         else:
             return None
     def apply_calibration(self, print_time, calibration):
@@ -587,9 +587,8 @@ class PrinterMechaduino:
         self.gcode.respond_info(
             "Stepper Position: %d\n"
             "Encoder Position: %d\n"
-            "Encoder Errors: %d\n"
             "Servo Error: %d" %
-            (realtime_pos, enc_pos[0], enc_pos[1], servo_stats[0]))
+            (realtime_pos, enc_pos, servo_stats[0]))
     def cmd_TEST_PID_INIT(self, params):
         toolhead = self.printer.lookup_object('toolhead')
         print_time = toolhead.get_last_move_time()

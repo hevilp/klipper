@@ -32,7 +32,6 @@ struct spi_position {
     struct timer timer;
     uint32_t rest_time;
     uint32_t position;
-    uint32_t errors;
     struct spidev_s *spi;
     struct servo_stepper *servo_stepper;
     uint8_t chip_type, flags;
@@ -109,7 +108,6 @@ command_schedule_spi_position(uint32_t *args)
     sp->rest_time = args[2];
     if (! sp->rest_time)
         return;
-    sp->errors = 0;
     sched_add_timer(&sp->timer);
 }
 DECL_COMMAND(command_schedule_spi_position,
@@ -124,8 +122,8 @@ command_query_last_spi_position(uint32_t *args)
     uint32_t next_clock = sp->timer.waketime;
     uint32_t position = spi_position_get_position(sp);
     irq_enable();
-    sendf("spi_position_result oid=%c next_clock=%u position=%u errors=%u",
-          oid, next_clock, position, sp->errors);
+    sendf("spi_position_result oid=%c next_clock=%u position=%u",
+          oid, next_clock, position);
 }
 DECL_COMMAND(command_query_last_spi_position, "query_last_spi_position oid=%c");
 
@@ -170,17 +168,7 @@ spi_position_handle_AS5047D(struct spi_position *sp)
     spidev_transfer(sp->spi, 1, sizeof(msg), msg);
     uint16_t value;
     memcpy(&value, msg, sizeof(value));
-    value = be16_to_cpu(value);
-    if (value & (1 << 14)) {
-        // error bit set
-        sp->errors++;
-        // TODO:  I should probably make this into a loop where
-        // the request is attempted several times.  Generally
-        // we should not get an error, but if we do we don't
-        // want to pass it to do_update, we should probably
-        // shutdown instead
-    }
-    spi_position_do_update(sp, (value << 2) & 0xffff);
+    spi_position_do_update(sp, (be16_to_cpu(value) << 2) & 0xffff);
 }
 
 void

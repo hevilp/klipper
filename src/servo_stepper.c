@@ -19,7 +19,6 @@
     (((val) > (max)) ? (max) : (val)))
 #define ABS(val) (((val) < 0) ? -(val) : (val))
 
-#define PID_MAX_ERROR 
 #define PID_INIT_HOLD 2000
 #define PID_INIT_SAMPLES 20
 #define PID_SCALE_DIVISOR 1024
@@ -39,7 +38,7 @@
 // potential be a bad encoder reading)
 #define PHASE_MAX 51200
 
-#define DEBUG
+//#define DEBUG
 
 struct pid_control {
     uint8_t init_count;
