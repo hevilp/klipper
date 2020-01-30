@@ -96,9 +96,15 @@ static void
 servo_stepper_mode_pid_init(struct servo_stepper *ss, uint32_t position)
 {
     if (ss->pid_ctrl.last_phase) {
+        // Give the A4954 some time to come out of standby mode before
+        // applying hold current.  The datasheet says we allow 200 us,
+        // here we are allowing roughly 1667 us.
+        if (ss->pid_ctrl.last_phase == PID_INIT_HOLD - 10)
+            a4954_hold(ss->stepper_driver, ss->hold_current_scale);
+
         // Hold for a period of time while the stepper position
         // stabilizes after its energized.  This should be roughly
-        // .25 seconds.
+        // .31  seconds.
         ss->pid_ctrl.last_phase--;
         return;
     }
@@ -137,11 +143,9 @@ servo_stepper_mode_pid_init(struct servo_stepper *ss, uint32_t position)
         output("Encoder Start Mean: %u, Last Encoder Position %u",
             ss->pid_ctrl.encoder_offset, position);
 #endif
-        ss->pid_ctrl.error = 0;
         ss->pid_ctrl.last_phase = 0;
-        ss->pid_ctrl.last_stp_pos = virtual_stepper_get_position(
-            ss->virtual_stepper);
         ss->pid_ctrl.last_sample_time = timer_read_time();
+        ss->pid_ctrl.error = 0;
         ss->flags = SS_MODE_HPID;
     }
 }
@@ -270,13 +274,13 @@ servo_stepper_set_hpid_mode(struct servo_stepper *ss, uint32_t *args)
     ss->run_current_scale = args[2];
     ss->hold_current_scale = args[3];
     a4954_reset(ss->stepper_driver);
-    a4954_hold(ss->stepper_driver, ss->hold_current_scale);
     ss->pid_ctrl.Kp = args[4];
     ss->pid_ctrl.Ki = args[5];
     ss->pid_ctrl.Kd = args[6];
     ss->pid_ctrl.init_count = 0;
     ss->pid_ctrl.last_phase = PID_INIT_HOLD;
-    ss->pid_ctrl.last_stp_pos = 0;
+    ss->pid_ctrl.last_stp_pos = virtual_stepper_get_position(
+        ss->virtual_stepper);
     ss->pid_ctrl.error = 0;
     ss->pid_ctrl.integral = 0;
     ss->flags = SS_MODE_PID_INIT;
