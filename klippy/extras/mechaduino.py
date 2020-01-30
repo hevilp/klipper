@@ -557,8 +557,9 @@ class PrinterMechaduino:
             self.cmd_GET_SERVO_POSITION,
             desc=self.cmd_GET_SERVO_POSITION_help)
         self.gcode.register_mux_command(
-            "TEST_PID_INIT", "SERVO", servo_name,
-            self.cmd_TEST_PID_INIT)
+            "SERVO_ENABLE", "SERVO", servo_name,
+            self.cmd_SERVO_ENABLE,
+            desc=self.cmd_SERVO_ENABLE_help)
     def get_mcu_stepper(self):
         return self.mcu_vstepper
     def set_enable(self, print_time):
@@ -589,13 +590,16 @@ class PrinterMechaduino:
             "Encoder Position: %d\n"
             "Servo Error: %d" %
             (realtime_pos, enc_pos, servo_stats[0]))
-    def cmd_TEST_PID_INIT(self, params):
+    cmd_SERVO_ENABLE_help = "Manually Enable Servo Stepper"
+    def cmd_SERVO_ENABLE(self, params):
         toolhead = self.printer.lookup_object('toolhead')
         print_time = toolhead.get_last_move_time()
-        if self.gcode.get_int('DISABLE', params, 0):
-            self.servo_stepper.set_disabled(print_time)
+        stepper_enable = self.printer.lookup_object('stepper_enable')
+        se = stepper_enable.lookup_enable(self.mcu_vstepper.get_name())
+        if self.gcode.get_int('ENABLE', params, 1):
+            se.motor_enable(print_time)
         else:
-            self.servo_stepper.set_hpid_mode(print_time)
+            se.motor_disable(print_time)
 
 def load_config_prefix(config):
     return PrinterMechaduino(config)
