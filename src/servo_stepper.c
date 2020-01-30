@@ -34,7 +34,6 @@
 // The postion to phase conversion results in 24-bit resolution.  When
 // the result overflows we need to be able to compensate with a bias.
 #define PHASE_BIAS 0x01000000
-#define PHASE_MASK 0x00C00000
 
 #define DEBUG
 
@@ -134,8 +133,10 @@ servo_stepper_mode_pid_init(struct servo_stepper *ss, uint32_t position)
     ss->pid_ctrl.init_count++;
 
     if (ss->pid_ctrl.init_count >= PID_INIT_SAMPLES) {
+#ifdef DEBUG
         output("Encoder Start Mean: %u, Last Encoder Position %u",
             ss->pid_ctrl.encoder_offset, position);
+#endif
         ss->pid_ctrl.error = 0;
         ss->pid_ctrl.last_phase = 0;
         ss->pid_ctrl.last_stp_pos = virtual_stepper_get_position(
@@ -165,7 +166,8 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
     uint32_t phase = position_to_phase(ss, position);
     uint32_t last_phase = ss->pid_ctrl.last_phase;
     int32_t phase_diff;
-    if ((phase ^ last_phase) & PHASE_MASK) {
+
+    if (((phase ^ last_phase) >> 22) == 0x3) {
         // Handle the integer wraparound for cases where
         // the phase resolution is less than 32-bit
         phase_diff = phase - (PHASE_BIAS - last_phase);
