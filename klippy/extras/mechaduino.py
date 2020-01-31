@@ -285,6 +285,55 @@ class MCU_servo_stepper:
             [self.oid], response='servo_stepper_stats', response_oid=self.oid)
         return (params['error'],)
 
+
+AS5047_REGS = {
+    'NOP': 0xC000, 'EERFL': 0x4001, 'PROG': 0xC003,
+    'DIAAGC': 0xFFFC, 'MAG': 0x7FFD, 'ANGLEUNC': 0x7FFE,
+    'ANGLECOM': 0xFFFF
+}
+
+class MCU_as5047d:
+    def __init__(self, config, spi):
+        self.name = config.get_name().split()[-1]
+        self.printer = config.get_printer()
+        self.gcode = self.printer.lookup_object('gcode')
+        self.spi = spi
+        reactor = self.printer.get_reactor()
+        self.mutex = reactor.mutex()
+
+        # Register Gcode commands
+        self.gcode.register_mux_command(
+            "QUERY_ENCODER_POSITION", "SERVO", self.name,
+            self.cmd_QUERY_ENCODER_POSITION)
+        self.gcode.register_mux_command(
+            "DUMP_ENCODER_REGS", "SERVO", self.name,
+            self.cmd_DUMP_ENCODER_REGS)
+    def query_position(self):
+        bits = self.send_command('ANGLEUNC')
+        val = (bits[0] << 8) | bits[1]
+        return val & 0x3FFF
+    def send_command(self, reg_name):
+        reg = AS5047_REGS.get(reg_name)
+        if reg is None:
+            return None
+        with self.mutex:
+            self.spi.spi_send([(reg >> 8 & 0xFF), (reg & 0xFF)])
+            params = self.spi.spi_transfer([0xC0, 0x00])
+        return bytearray(params['response'])
+    def cmd_QUERY_ENCODER_POSITION(self, params):
+        pos = self.query_position() << 2
+        self.gcode.respond_info('Encoder Position: %d' % (pos))
+    def cmd_DUMP_ENCODER_REGS(self, params):
+        msg = "%s AS5047 REGS:" % self.name.upper()
+        for reg_name in AS5047_REGS:
+            if reg_name == 'NOP':
+                continue
+            msg += '\n'
+            bits = self.send_command(reg_name)
+            val = (bits[0] << 8) | bits[1]
+            msg += "%-10s %s" % (reg_name + ":", format(val, '#018b')[2:])
+        self.gcode.respond_info(msg)
+
 # SPI controlled hall position sensor
 class MCU_spi_position:
     def __init__(self, config, control):
@@ -306,6 +355,9 @@ class MCU_spi_position:
             "config_spi_position oid=%d spi_oid=%d chip_type=%d"
             " servo_stepper_oid=%d" % (
                 self.oid, self.spi.get_oid(), chip_id, self.control.get_oid()))
+        self.autostart = config.getboolean('autostart_spi', True)
+        if self.sensor_type == 'as5047d' and not self.autostart:
+            MCU_as5047d(config, self.spi)
         # Commands
         self.update_clock = 0
         self.query_pos_cmd = self.set_calibration_cmd = None
@@ -313,11 +365,12 @@ class MCU_spi_position:
         # Position storage
         self.positions = []
     def _build_config(self):
-        clock = self.mcu.get_query_slot(self.oid)
-        self.update_clock = self.mcu.seconds_to_clock(UPDATE_TIME)
-        self.mcu.add_config_cmd(
-            "schedule_spi_position oid=%u clock=%u rest_ticks=%u" % (
-                self.oid, clock, self.update_clock), is_init=True)
+        if self.autostart:
+            clock = self.mcu.get_query_slot(self.oid)
+            self.update_clock = self.mcu.seconds_to_clock(UPDATE_TIME)
+            self.mcu.add_config_cmd(
+                "schedule_spi_position oid=%u clock=%u rest_ticks=%u" % (
+                    self.oid, clock, self.update_clock), is_init=True)
         cmd_queue = self.spi.get_command_queue()
         self.query_pos_cmd = self.mcu.lookup_command(
             "query_last_spi_position oid=%c", cq=cmd_queue)
@@ -423,7 +476,7 @@ class ServoCalibration:
         if cal is None:
             self.reset_calibration(0.)
             return
-        invert = config.getboolean('invert', False)
+        invert = config.getboolean('reverse_cal', False)
         # Parse calibration data
         data = [d.strip() for d in cal.split(',')]
         angles = [float(d) for d in data if d]
@@ -519,7 +572,7 @@ class ServoCalibration:
         configfile = self.printer.lookup_object('configfile')
         configfile.remove_section(self.name)
         configfile.set(self.name, 'calibrate', ''.join(cal_contents))
-        configfile.set(self.name, 'invert', (direction == 1))
+        configfile.set(self.name, 'reverse_cal', (direction == 1))
         configfile.set(self.name, 'calibrate_start_step', '%d' % (min_step,))
 
 
