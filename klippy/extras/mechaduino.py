@@ -339,6 +339,8 @@ class MCU_spi_position:
     def __init__(self, config, control):
         self.control = control
         self.printer = config.get_printer()
+        self.gcode = self.printer.lookup_object('gcode')
+        self.gc_response_counter = None
         # Sensor type
         sensors = { "a1333": (1, 3, 10000000),
                     "as5047d": (2, 1, 10000000) }
@@ -383,7 +385,13 @@ class MCU_spi_position:
         last_read_time = self.mcu.clock_to_print_time(last_read_clock)
         position = params['position']
         self.positions.append((last_read_time, position))
-    def init_position_query(self):
+        if self.gc_response_counter is not None:
+            if len(self.positions) % self.gc_response_counter == 0:
+                reactor = self.printer.get_reactor()
+                reactor.register_async_callback(
+                    lambda e, s=self: s.gcode.respond_info("Calibrating..."))
+    def init_position_query(self, response_counter=None):
+        self.gc_response_counter = response_counter
         self.positions = []
         self.mcu.register_response(
             self._handle_spi_position_result, "spi_position_result", self.oid)
@@ -391,6 +399,7 @@ class MCU_spi_position:
         clock = self.mcu.print_time_to_clock(print_time)
         self.query_pos_cmd.send([self.oid], minclock=clock, reqclock=clock)
     def get_clear_positions(self):
+        self.gc_response_counter = None
         self.mcu.register_response(
             None, "spi_position_result", self.oid)
         pos = self.positions
@@ -476,13 +485,13 @@ class ServoCalibration:
         if cal is None:
             self.reset_calibration(0.)
             return
-        invert = config.getboolean('reverse_cal', False)
+        reverse_cal = config.getboolean('reverse_cal', False)
         # Parse calibration data
         data = [d.strip() for d in cal.split(',')]
         angles = [float(d) for d in data if d]
         # Calculate and apply calibration data
         calibration = self.get_calibration(angles)
-        if invert:
+        if reverse_cal:
             calibration.reverse()
         msg = "Applying Calibration to Servo [%s]:" % (self.name)
         for i, cal in enumerate(calibration):
@@ -495,9 +504,7 @@ class ServoCalibration:
         self.spi_position.apply_calibration(print_time, bc)
     cmd_SERVO_CALIBRATE_help = "Calibrate the servo stepper"
     def cmd_SERVO_CALIBRATE(self, params):
-        direction = self.gcode.get_int('INVERT_DIR', params, 0)
-        direction = 1 if direction else -1
-        self.spi_position.init_position_query()
+        self.spi_position.init_position_query(response_counter=100)
         full_steps = self.servo_stepper.get_full_steps_per_rotation()
         # Go into open loop mode
         old_mode = self.servo_stepper.set_servo_mode("open_loop")
@@ -511,12 +518,12 @@ class ServoCalibration:
         move_time = 0.100
         move_speed = full_step_dist / move_time
         fmove.manual_move(
-            self.mcu_vstepper, 16. * direction * full_step_dist, move_speed)
+            self.mcu_vstepper, 16. * -full_step_dist, move_speed)
         # Move to each full step position and then query the sensor
         steps = []
         for i in range(full_steps - 1, -1, -1):
             fmove.manual_move(
-                self.mcu_vstepper, direction * full_step_dist, move_speed)
+                self.mcu_vstepper, -full_step_dist, move_speed)
             start_query_time = toolhead.get_last_move_time() + 0.050
             for j in range(10):
                 self.spi_position.query_position(start_query_time + j*0.010)
@@ -556,6 +563,12 @@ class ServoCalibration:
         inc_angles = []
         for i in range(full_steps):
             inc_angles.append(angles[(i + min_step) % full_steps])
+        # Correct the list if the wiring/encoder is inverted
+        reverse_cal = False
+        if inc_angles[1] > inc_angles[2]:
+            reverse_cal = True
+            inc_angles = inc_angles[1:] + inc_angles[:1]
+            inc_angles.reverse()
         msg = "mechaduino calibration: Stddev=%.3f (%d of %d queries)" % (
             math.sqrt(total_variance / total_count), total_count,
             full_steps * 10)
@@ -572,7 +585,7 @@ class ServoCalibration:
         configfile = self.printer.lookup_object('configfile')
         configfile.remove_section(self.name)
         configfile.set(self.name, 'calibrate', ''.join(cal_contents))
-        configfile.set(self.name, 'reverse_cal', (direction == 1))
+        configfile.set(self.name, 'reverse_cal', reverse_cal)
         configfile.set(self.name, 'calibrate_start_step', '%d' % (min_step,))
 
 
