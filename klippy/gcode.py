@@ -319,6 +319,7 @@ class GCodeParser:
     def respond(self, msg):
         if self.is_fileinput:
             return
+        self.printer.send_event("gcode:respond", msg)
         try:
             os.write(self.fd, msg+"\n")
         except os.error:
