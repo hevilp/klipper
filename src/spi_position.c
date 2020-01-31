@@ -39,7 +39,7 @@ struct spi_position {
 };
 
 enum {
-    SP_PENDING = 1,
+    SP_PENDING = 1, SP_NEED_INIT = (1 << 1)
 };
 
 static struct task_wake spi_position_wake;
@@ -76,6 +76,8 @@ command_config_spi_position(uint32_t *args)
     int i;
     for (i=0; i<CALIBRATE_SIZE; i++)
         sp->calibration[i] = i << CALIBRATE_HI_SHIFT;
+    if (sp->chip_type == SP_CHIP_AS5047D)
+        sp->flags |= SP_NEED_INIT;
 }
 DECL_COMMAND(command_config_spi_position,
              "config_spi_position oid=%c spi_oid=%c chip_type=%c"
@@ -104,6 +106,16 @@ command_schedule_spi_position(uint32_t *args)
 {
     struct spi_position *sp = spi_position_oid_lookup(args[0]);
     sched_del_timer(&sp->timer);
+    if (sp->chip_type == SP_CHIP_AS5047D && (sp->flags & SP_NEED_INIT)) {
+        // Read out the DIAG reg followed by the error reg.  For some
+        // devices this is necessary to clear the error bit.
+        sp->flags &= ~SP_NEED_INIT;
+        uint8_t msg[2] = { 0xFF, 0xFC };
+        spidev_transfer(sp->spi, 0, sizeof(msg), msg);
+        msg[0] = 0x40;
+        msg[1] = 0x01;
+        spidev_transfer(sp->spi, 0, sizeof(msg), msg);
+    }
     sp->timer.waketime = args[1];
     sp->rest_time = args[2];
     if (! sp->rest_time)
