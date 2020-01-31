@@ -22,11 +22,9 @@
 #define PID_INIT_HOLD 2000
 #define PID_INIT_SAMPLES 20
 #define PID_SCALE_DIVISOR 1024
-// TODO:  TIME_SCALE_SHIFT needs to be calculated based on the clock frequency
+// TODO:  TIME_SCALE_SHIFT should be calculated based on the clock frequency
 // To get the expected number of nano seconds it takes to run the loop at 6KHz:
 // us_per_update = Clock Ticks * CONFIG_CLOCK_FREQ / 1000000
-// Then we need to get the location of the MSB set to 1
-// Not sure how to get the preprocessor to do this.
 #define TIME_SCALE_SHIFT 10
 #define FULL_STEP 256
 
@@ -156,11 +154,6 @@ servo_stepper_mode_pid_init(struct servo_stepper *ss, uint32_t position)
 static void
 servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
 {
-    // hpid = hybrid pid
-    // The idea behind hybrid PID is to skip the PID loop if the stepper was
-    // not commanded to move AND the measured position is within an acceptable
-    // error. In the initial test I will allow a phase of +/- 16 microsteps,
-    // as this seems like reasonable accuracy for the encoder to maintain.
 
     // TODO: Implement Alpha-Beta Filter on the Encoder Position using
     // the stepper phase current
