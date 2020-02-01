@@ -8,7 +8,6 @@ void a4954_set_phase(struct a4954 *a, uint32_t phase, uint32_t scale);
 void a4954_disable(struct a4954 *a);
 void a4954_enable(struct a4954 *a);
 
-void a4954_move_to_phase(struct a4954 *a, uint32_t phase, uint32_t scale);
 void a4954_hold(struct a4954 *a, uint32_t scale);
 void a4954_reset(struct a4954 *a);
 

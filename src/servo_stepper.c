@@ -81,7 +81,7 @@ servo_stepper_mode_open_loop(struct servo_stepper *ss, uint32_t position)
 {
     uint32_t vs_position = virtual_stepper_get_position(ss->virtual_stepper);
     //a4954_set_phase(ss->stepper_driver, vs_position, ss->run_current_scale);
-    a4954_move_to_phase(ss->stepper_driver, vs_position * ss->step_multiplier,
+    a4954_set_phase(ss->stepper_driver, vs_position * ss->step_multiplier,
         ss->run_current_scale);
 }
 
@@ -193,7 +193,7 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
     co = CONSTRAIN(co, -FULL_STEP, FULL_STEP);
     uint32_t cur_scale = ((ABS(co) * (ss->run_current_scale -
         ss->hold_current_scale)) / FULL_STEP) + ss->hold_current_scale;
-    a4954_move_to_phase(ss->stepper_driver, phase + co, cur_scale);
+    a4954_set_phase(ss->stepper_driver, phase + co, cur_scale);
 
 #ifdef DEBUG
     if (ss->pid_ctrl.query_flag) {

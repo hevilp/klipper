@@ -76,37 +76,28 @@ set_pins_in3_in4(struct a4954 *a, uint8_t state)
     }
 }
 
-// Set the phase and current of the a4954 driver. Caller must disable irqs.
+// Note:  This is an alternative implementation to the prevous "set_phase",
+// which toggles the "in1 - in4" pins without knowledge of the previous phase.
+// This is necessary for closed loop operation.
 void
 a4954_set_phase(struct a4954 *a, uint32_t phase, uint32_t scale)
 {
-    // Determine phase change
-    uint32_t last_phase = a->last_phase, phase_xor = last_phase ^ phase;
     a->last_phase = phase;
 
     // Calculate new coil power
     uint32_t coil1_pow = lookup_sine(phase, scale);
     uint32_t coil2_pow = lookup_sine(phase + 256, scale);
 
-    //output("set_phase lp=%u p=%u px=%u c1=%u c2=%u"
-    //       , last_phase, phase, (phase_xor & 0x300)>>8, coil1_pow, coil2_pow);
-
     // Apply update
     struct gpio_pwm vref12 = a->vref12, vref34 = a->vref34;
     gpio_pwm_write(vref12, coil1_pow);
     gpio_pwm_write(vref34, coil2_pow);
-    if (phase_xor & 0x200) {
-        struct gpio_out in1 = a->in1, in2 = a->in2;
-        gpio_out_toggle_noirq(in1);
-        gpio_out_toggle_noirq(in2);
-        a->pin_state ^= PIN_STATE_IN1_IN2;
-    }
-    if ((phase_xor + 256) & 0x200) {
-        struct gpio_out in3 = a->in3, in4 = a->in4;
-        gpio_out_toggle_noirq(in3);
-        gpio_out_toggle_noirq(in4);
-        a->pin_state ^= PIN_STATE_IN3_IN4;
-    }
+
+    // If sine is negative, in1 is high, in2 is low
+    set_pins_in1_in2(a, !!(phase & 0x200));
+
+    // If cosine is negative, in3 is high, in4 is low
+    set_pins_in3_in4(a, !!((phase + 256) & 0x200));
 }
 
 void
@@ -158,30 +149,6 @@ a4954_enable(struct a4954 *a)
         gpio_out_write(in3, 0);
         gpio_out_write(in4, 1);
     }
-}
-
-// Note:  This is an alternative implementation to "set_phase", which
-// toggles the "in1 - in4" pins without knowledge of the previous phase.
-// This is necessary for closed loop operation.
-void
-a4954_move_to_phase(struct a4954 *a, uint32_t phase, uint32_t scale)
-{
-    a->last_phase = phase;
-
-    // Calculate new coil power
-    uint32_t coil1_pow = lookup_sine(phase, scale);
-    uint32_t coil2_pow = lookup_sine(phase + 256, scale);
-
-    // Apply update
-    struct gpio_pwm vref12 = a->vref12, vref34 = a->vref34;
-    gpio_pwm_write(vref12, coil1_pow);
-    gpio_pwm_write(vref34, coil2_pow);
-
-    // If sine is negative, in1 is high, in2 is low
-    set_pins_in1_in2(a, !!(phase & 0x200));
-
-    // If cosine is negative, in3 is high, in4 is low
-    set_pins_in3_in4(a, !!((phase + 256) & 0x200));
 }
 
 void
