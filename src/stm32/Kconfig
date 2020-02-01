@@ -12,6 +12,7 @@ config STM32_SELECT
     select HAVE_GPIO_SPI
     select HAVE_GPIO_BITBANGING
     select HAVE_CHIPID
+    select HAVE_SERVO_STEPPER
 
 config BOARD_DIRECTORY
     string

@@ -4,6 +4,7 @@
 //
 // This file may be distributed under the terms of the GNU GPLv3 license.
 
+#include "autoconf.h"  // CONFIG_HAVE_GPIO_DAC
 #include "board/irq.h" // irq_disable
 #include "board/gpio.h" // gpio_pwm_write
 #include "basecmd.h" // oid_alloc
@@ -13,7 +14,11 @@
 
 struct a4954 {
     struct gpio_out in1, in2, in3, in4;
+#if CONFIG_HAVE_GPIO_DAC
+    struct gpio_dac vref12, vref34;
+#else
     struct gpio_pwm vref12, vref34;
+#endif
     uint32_t last_phase;
     uint8_t pin_state;
     uint8_t flags;
@@ -45,7 +50,7 @@ static const uint8_t sine_table[256] = {
 };
 
 // Calculate a sine value from a phase (phase is between 0-512)
-static uint32_t
+static inline uint32_t
 lookup_sine(uint32_t phase, uint32_t scale)
 {
     uint32_t idx = phase & 0xff;
@@ -55,7 +60,7 @@ lookup_sine(uint32_t phase, uint32_t scale)
     return DIV_ROUND_CLOSEST(scale * sin, 1024);
 }
 
-static void
+static inline void
 set_pins_in1_in2(struct a4954 *a, uint8_t state)
 {
     if ((a->pin_state & PIN_STATE_IN1_IN2) ^ state) {
@@ -65,7 +70,7 @@ set_pins_in1_in2(struct a4954 *a, uint8_t state)
     }
 }
 
-static void
+static inline void
 set_pins_in3_in4(struct a4954 *a, uint8_t state)
 {
     state = state << 1;
@@ -74,6 +79,20 @@ set_pins_in3_in4(struct a4954 *a, uint8_t state)
         gpio_out_toggle_noirq(a->in4);
         a->pin_state ^= PIN_STATE_IN3_IN4;
     }
+}
+
+static inline void
+set_coil_power(struct a4954 *a, uint32_t coil1_pow, uint32_t coil2_pow)
+{
+#if CONFIG_HAVE_GPIO_DAC
+    struct gpio_dac vref12 = a->vref12, vref34 = a->vref34;
+    gpio_dac_write(vref12, coil1_pow);
+    gpio_dac_write(vref34, coil2_pow);
+#else
+    struct gpio_pwm vref12 = a->vref12, vref34 = a->vref34;
+    gpio_pwm_write(vref12, coil1_pow);
+    gpio_pwm_write(vref34, coil2_pow);
+#endif
 }
 
 // Note:  This is an alternative implementation to the prevous "set_phase",
@@ -89,9 +108,7 @@ a4954_set_phase(struct a4954 *a, uint32_t phase, uint32_t scale)
     uint32_t coil2_pow = lookup_sine(phase + 256, scale);
 
     // Apply update
-    struct gpio_pwm vref12 = a->vref12, vref34 = a->vref34;
-    gpio_pwm_write(vref12, coil1_pow);
-    gpio_pwm_write(vref34, coil2_pow);
+    set_coil_power(a, coil1_pow, coil2_pow);
 
     // If sine is negative, in1 is high, in2 is low
     set_pins_in1_in2(a, !!(phase & 0x200));
@@ -107,9 +124,7 @@ a4954_disable(struct a4954 *a)
         // Already disabled
         return;
 
-    struct gpio_pwm vref12 = a->vref12, vref34 = a->vref34;
-    gpio_pwm_write(vref12, 0);
-    gpio_pwm_write(vref34, 0);
+    set_coil_power(a, 0, 0);
     struct gpio_out in1 = a->in1, in2 = a->in2;
     gpio_out_write(in1, 0);
     gpio_out_write(in2, 0);
@@ -156,14 +171,9 @@ a4954_hold(struct a4954 *a, uint32_t scale)
 {
     uint32_t phase = a->last_phase;
 
-    // Calculate new coil power
     uint32_t coil1_pow = lookup_sine(phase, scale);
     uint32_t coil2_pow = lookup_sine(phase + 256, scale);
-
-    // Apply update
-    struct gpio_pwm vref12 = a->vref12, vref34 = a->vref34;
-    gpio_pwm_write(vref12, coil1_pow);
-    gpio_pwm_write(vref34, coil2_pow);
+    set_coil_power(a, coil1_pow, coil2_pow);
 }
 
 void
@@ -180,8 +190,13 @@ command_config_a4954(uint32_t *args)
     struct gpio_out in2 = gpio_out_setup(args[2], 0);
     struct gpio_out in3 = gpio_out_setup(args[3], 0);
     struct gpio_out in4 = gpio_out_setup(args[4], 0);
+#if CONFIG_HAVE_GPIO_DAC
+    struct gpio_dac vref12 = gpio_dac_setup(args[5]);
+    struct gpio_dac vref34 = gpio_dac_setup(args[6]);
+#else
     struct gpio_pwm vref12 = gpio_pwm_setup(args[5], 1, 0);
     struct gpio_pwm vref34 = gpio_pwm_setup(args[6], 1, 0);
+#endif
     struct a4954 *a = oid_alloc(args[0], command_config_a4954, sizeof(*a));
     a->in1 = in1;
     a->in2 = in2;

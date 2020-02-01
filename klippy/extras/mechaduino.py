@@ -47,10 +47,15 @@ class MCU_a4954:
         self.hold_current = config.getfloat(
             'hold_current', self.max_current, above=0.,
             maxval=self.max_current)
-        self.pwm_max = 0.
+        self.out_max = 0.
         self.mcu.register_config_callback(self._build_config)
     def _build_config(self):
-        self.pwm_max = self.mcu.get_constant_float("PWM_MAX")
+        try:
+            # The DAC is preferred if available
+            self.out_max = self.mcu.get_constant_float("DAC_MAX")
+        except Exception:
+            self.out_max = self.mcu.get_constant_float("PWM_MAX")
+        logging.info("Mechaduino: Maximum Output Scale = %.2f" % self.out_max)
     def get_mcu(self):
         return self.mcu
     def get_oid(self):
@@ -59,7 +64,8 @@ class MCU_a4954:
         if current is None:
             current = self.max_current
         current = max(0., min(self.max_current, current))
-        return int(current * self.current_factor * self.pwm_max)
+        return min(self.out_max,
+                   int(current * self.current_factor * self.out_max))
 
 # Virtual stepper position tracking class
 # XXX - this is just a dup of mcu.MCU_stepper with different mcu commands
