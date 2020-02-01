@@ -248,6 +248,8 @@ servo_stepper_set_disabled(struct servo_stepper *ss)
     irq_disable();
     ss->flags = SS_MODE_DISABLED;
     a4954_disable(ss->stepper_driver);
+    uint32_t position = virtual_stepper_get_position(ss->virtual_stepper);
+    a4954_update_last_phase(ss->stepper_driver, position * ss->step_multiplier);
     irq_enable();
 }
 
@@ -255,8 +257,7 @@ static void
 servo_stepper_set_open_loop_mode(struct servo_stepper *ss, uint32_t *args)
 {
     irq_disable();
-    a4954_reset(ss->stepper_driver);
-    virtual_stepper_set_position(ss->virtual_stepper, 0);
+    a4954_enable(ss->stepper_driver);
     ss->flags = SS_MODE_OPEN_LOOP;
     ss->run_current_scale = args[2];
     ss->hold_current_scale = args[3];
