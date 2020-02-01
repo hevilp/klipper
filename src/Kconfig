@@ -109,6 +109,9 @@ config HAVE_GPIO
 config HAVE_GPIO_ADC
     bool
     default n
+config HAVE_GPIO_DAC
+    bool
+    default n
 config HAVE_GPIO_SPI
     bool
     default n

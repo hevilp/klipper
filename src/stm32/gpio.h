@@ -30,6 +30,13 @@ uint32_t gpio_adc_sample(struct gpio_adc g);
 uint16_t gpio_adc_read(struct gpio_adc g);
 void gpio_adc_cancel_sample(struct gpio_adc g);
 
+struct gpio_dac {
+    void *dac;
+    uint32_t chan;
+};
+struct gpio_dac gpio_dac_setup(uint32_t pin);
+void gpio_dac_write(struct gpio_dac g, uint16_t data);
+
 struct spi_config {
     void *spi;
     uint32_t spi_cr1;
