@@ -85,9 +85,8 @@ static inline void
 set_coil_power(struct a4954 *a, uint32_t coil1_pow, uint32_t coil2_pow)
 {
 #if CONFIG_HAVE_GPIO_DAC
-    struct gpio_dac vref12 = a->vref12, vref34 = a->vref34;
-    gpio_dac_write(vref12, coil1_pow);
-    gpio_dac_write(vref34, coil2_pow);
+    struct gpio_dac vref = a->vref12;
+    gpio_dual_dac_write(vref, coil1_pow, coil2_pow);
 #else
     struct gpio_pwm vref12 = a->vref12, vref34 = a->vref34;
     gpio_pwm_write(vref12, coil1_pow);
