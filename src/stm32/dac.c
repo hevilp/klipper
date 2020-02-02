@@ -33,7 +33,7 @@ struct gpio_dac gpio_dac_setup(uint32_t pin)
     // Enable the DAC.
     enable_pclock(dac_base);
     dac->CR &= ~(0xffff << (16 * chan));
-    dac->CR |= ((0x7 << 3) | 1) << (16 * chan);
+    dac->CR |= ((0xF << 2) | 1) << (16 * chan);
 
     // Disconnect the pin from the pad driver.
     gpio_peripheral(pin, GPIO_ANALOG, 0);
