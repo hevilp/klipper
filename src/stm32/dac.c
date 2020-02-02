@@ -33,7 +33,11 @@ struct gpio_dac gpio_dac_setup(uint32_t pin)
     // Enable the DAC.
     enable_pclock(dac_base);
     dac->CR &= ~(0xffff << (16 * chan));
-    dac->CR |= ((0xF << 2) | 1) << (16 * chan);
+
+    // Single DAC mode with SW trigger
+    dac->CR |= (0xF << 2) << (16 * chan);
+    dac->CR |= 1 << (16 * chan);
+
 
     // Disconnect the pin from the pad driver.
     gpio_peripheral(pin, GPIO_ANALOG, 0);
@@ -55,4 +59,13 @@ void gpio_dac_write(struct gpio_dac g, uint16_t data)
         break;
     }
     dac->SWTRIGR = 1 << g.chan;
+}
+
+void
+gpio_dual_dac_write(struct gpio_dac g, uint16_t dac1_data, uint16_t dac2_data)
+{
+    DAC_TypeDef *dac = g.dac;
+    dac->DHR12R1 = dac1_data & 0xFFF;
+    dac->DHR12R2 = dac2_data & 0xFFF;
+    dac->SWTRIGR = 0x3;
 }
