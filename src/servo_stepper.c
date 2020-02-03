@@ -172,20 +172,20 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
         ((phase_diff < -PHASE_MAX) ? PHASE_BIAS : 0);
     phase_diff += bias;
 
-    uint32_t stp_pos = virtual_stepper_get_position(ss->virtual_stepper);
-    int32_t move_diff = (stp_pos - ss->pid_ctrl.last_stp_pos) *
-        ss->step_multiplier;
+    uint32_t stp_pos = virtual_stepper_get_position(ss->virtual_stepper) *
+         ss->step_multiplier;
+    int32_t move_diff = stp_pos - ss->pid_ctrl.last_stp_pos;
     ss->pid_ctrl.error += move_diff - phase_diff;
 
-    // Constrain the error to prevent overflow
-    int32_t error = CONSTRAIN(ss->pid_ctrl.error, -PHASE_MAX, PHASE_MAX);
+    // Constrain the error to a full step
+    int32_t error = CONSTRAIN(ss->pid_ctrl.error, -FULL_STEP, FULL_STEP);
 
     // Calculate the i-term;
     ss->pid_ctrl.integral += error * (int32_t)time_diff;
     ss->pid_ctrl.integral = CONSTRAIN(
         ss->pid_ctrl.integral, -FULL_STEP, FULL_STEP);
 
-    // Calc Corrected Output
+    // Calc Corrected Output Current
     int32_t co = ((ss->pid_ctrl.Kp * error) +
         (ss->pid_ctrl.Ki * ss->pid_ctrl.integral) -
         (ss->pid_ctrl.Kd * phase_diff / (int32_t)time_diff)) /
@@ -193,7 +193,13 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
     co = CONSTRAIN(co, -FULL_STEP, FULL_STEP);
     uint32_t cur_scale = ((ABS(co) * (ss->run_current_scale -
         ss->hold_current_scale)) / FULL_STEP) + ss->hold_current_scale;
-    a4954_set_phase(ss->stepper_driver, phase + co, cur_scale);
+
+    // If the error is within a 1/2 step, move to the next commanded position
+    // as if in open_loop mode.  Otherwise move relative to the encoder position.
+    uint32_t next_phase = (ABS(ss->pid_ctrl.error) > 128) ?
+        (phase + error) : stp_pos;
+    a4954_set_phase(ss->stepper_driver, next_phase, cur_scale);
+
 
 #ifdef DEBUG
     if (ss->pid_ctrl.query_flag) {
@@ -270,14 +276,14 @@ servo_stepper_set_hpid_mode(struct servo_stepper *ss, uint32_t *args)
     irq_disable();
     ss->run_current_scale = args[2];
     ss->hold_current_scale = args[3];
+    virtual_stepper_set_position(ss->virtual_stepper, 0);
     a4954_reset(ss->stepper_driver);
     ss->pid_ctrl.Kp = args[4];
     ss->pid_ctrl.Ki = args[5];
     ss->pid_ctrl.Kd = args[6];
     ss->pid_ctrl.init_count = 0;
     ss->pid_ctrl.last_phase = PID_INIT_HOLD;
-    ss->pid_ctrl.last_stp_pos = virtual_stepper_get_position(
-        ss->virtual_stepper);
+    ss->pid_ctrl.last_stp_pos = 0;
     ss->pid_ctrl.error = 0;
     ss->pid_ctrl.integral = 0;
     ss->flags = SS_MODE_PID_INIT;
