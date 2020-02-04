@@ -48,6 +48,7 @@ struct pid_control {
     uint32_t last_stp_pos;
     uint32_t last_sample_time;
 
+    uint32_t max_loop_time;
 #ifdef DEBUG
     uint8_t query_flag;
 #endif
@@ -218,10 +219,17 @@ void
 servo_stepper_update(struct servo_stepper *ss, uint32_t position)
 {
     uint32_t mode = ss->flags;
+    uint32_t pid_time;
     switch (mode) {
     case SS_MODE_OPEN_LOOP: servo_stepper_mode_open_loop(ss, position); break;
     case SS_MODE_TORQUE: servo_stepper_mode_torque_update(ss, position); break;
-    case SS_MODE_HPID: servo_stepper_mode_hpid_update(ss, position); break;
+    case SS_MODE_HPID:
+        pid_time = timer_read_time();
+        servo_stepper_mode_hpid_update(ss, position);
+        pid_time = timer_read_time() - pid_time;
+        if (pid_time > ss->pid_ctrl.max_loop_time)
+            ss->pid_ctrl.max_loop_time = pid_time;
+        break;
     case SS_MODE_PID_INIT: servo_stepper_mode_pid_init(ss, position); break;
     }
 }
@@ -336,11 +344,13 @@ command_servo_stepper_get_stats(uint32_t *args)
     struct servo_stepper *ss = servo_stepper_oid_lookup(oid);
     irq_disable();
     int32_t err = ss->pid_ctrl.error;
+    uint32_t max_time = ss->pid_ctrl.max_loop_time;
 #ifdef DEBUG
     ss->pid_ctrl.query_flag = 1;
 #endif
     irq_enable();
-    sendf("servo_stepper_stats oid=%c error=%i", oid, err);
+    sendf("servo_stepper_stats oid=%c error=%i max_time=%u",
+          oid, err, max_time);
 
 }
 DECL_COMMAND(command_servo_stepper_get_stats,

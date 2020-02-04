@@ -289,7 +289,7 @@ class MCU_servo_stepper:
     def get_servo_stats(self):
         params = self.get_stats_cmd.send_with_response(
             [self.oid], response='servo_stepper_stats', response_oid=self.oid)
-        return (params['error'],)
+        return (params['error'], params['max_time'])
 
 
 AS5047_REGS = {
@@ -660,8 +660,9 @@ class PrinterMechaduino:
         self.gcode.respond_info(
             "Stepper Position: %d\n"
             "Encoder Position: %d\n"
-            "Servo Error: %d" %
-            (realtime_pos, enc_pos, servo_stats[0]))
+            "Servo Error: %d\n"
+            "Max PID Loop Time: %d clock ticks" %
+            (realtime_pos, enc_pos, servo_stats[0], servo_stats[1]))
     cmd_SERVO_ENABLE_help = "Manually Enable Servo Stepper"
     def cmd_SERVO_ENABLE(self, params):
         toolhead = self.printer.lookup_object('toolhead')
