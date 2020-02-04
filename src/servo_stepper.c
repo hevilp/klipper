@@ -19,7 +19,7 @@
     (((val) > (max)) ? (max) : (val)))
 #define ABS(val) (((val) < 0) ? -(val) : (val))
 
-#define PID_INIT_HOLD 2000
+#define PID_INIT_HOLD 1000
 #define PID_INIT_SAMPLES 20
 #define PID_SCALE_DIVISOR 1024
 // TODO:  TIME_SCALE_SHIFT should be calculated based on the clock frequency
@@ -99,14 +99,14 @@ servo_stepper_mode_pid_init(struct servo_stepper *ss, uint32_t position)
 {
     if (ss->pid_ctrl.last_phase) {
         // Give the A4954 some time to come out of standby mode before
-        // applying hold current.  The datasheet says we allow 200 us,
-        // here we are allowing roughly 1667 us.
-        if (ss->pid_ctrl.last_phase == PID_INIT_HOLD - 10)
-            a4954_hold(ss->stepper_driver, ss->hold_current_scale);
+        // applying current.  The datasheet says we allow 200 us,
+        // here we are allowing roughly 500 us.
+        if (ss->pid_ctrl.last_phase == PID_INIT_HOLD - 3)
+            a4954_hold(ss->stepper_driver, ss->run_current_scale);
 
         // Hold for a period of time while the stepper position
         // stabilizes after its energized.  This should be roughly
-        // .31  seconds.
+        // .17  seconds.
         ss->pid_ctrl.last_phase--;
         return;
     }
