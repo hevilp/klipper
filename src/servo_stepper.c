@@ -19,8 +19,6 @@
     (((val) > (max)) ? (max) : (val)))
 #define ABS(val) (((val) < 0) ? -(val) : (val))
 
-#define PID_INIT_HOLD 1000
-#define PID_INIT_SAMPLES 20
 #define PID_SCALE_DIVISOR 1024
 // TODO:  TIME_SCALE_SHIFT should be calculated based on the clock frequency
 // To get the expected number of nano seconds it takes to run the loop at 6KHz:
@@ -39,11 +37,10 @@
 //#define DEBUG
 
 struct pid_control {
-    uint8_t init_count;
     int16_t Kp, Ki, Kd;
     int32_t integral;
     int32_t error;
-    uint32_t encoder_offset;
+    uint32_t phase_offset;
     uint32_t last_phase;
     uint32_t last_stp_pos;
     uint32_t last_sample_time;
@@ -97,59 +94,9 @@ servo_stepper_mode_torque_update(struct servo_stepper *ss, uint32_t position)
 static void
 servo_stepper_mode_pid_init(struct servo_stepper *ss, uint32_t position)
 {
-    if (ss->pid_ctrl.last_phase) {
-        // Give the A4954 some time to come out of standby mode before
-        // applying current.  The datasheet says we allow 200 us,
-        // here we are allowing roughly 500 us.
-        if (ss->pid_ctrl.last_phase == PID_INIT_HOLD - 3)
-            a4954_hold(ss->stepper_driver, ss->run_current_scale);
-
-        // Hold for a period of time while the stepper position
-        // stabilizes after its energized.  This should be roughly
-        // .17  seconds.
-        ss->pid_ctrl.last_phase--;
-        return;
-    }
-
-    // Start the computing the mean of encoder positions.  The mean is
-    // stored in the encoder_offset member of the struct.
-
-    if (ss->pid_ctrl.init_count == 0) {
-        // Set the initial reference position for the mean
-        ss->pid_ctrl.encoder_offset = position;
-    } else {
-        // calculate the moving average
-        uint32_t last_avg = ss->pid_ctrl.encoder_offset;
-        uint32_t pos_diff = position - last_avg;
-        uint8_t is_negative = 0;
-        if (pos_diff & 0x80000000) {
-            pos_diff = -pos_diff;
-            is_negative = 1;
-        }
-        // check encoder varaince
-        if (pos_diff > FULL_STEP)
-            shutdown("Encoder Variance too large!  Check your calibration"
-                " and magnet position.");
-
-        pos_diff = DIV_ROUND_CLOSEST(pos_diff, ss->pid_ctrl.init_count + 1);
-        if (is_negative)
-            ss->pid_ctrl.encoder_offset -= pos_diff;
-        else
-            ss->pid_ctrl.encoder_offset += pos_diff;
-    }
-
-    ss->pid_ctrl.init_count++;
-
-    if (ss->pid_ctrl.init_count >= PID_INIT_SAMPLES) {
-#ifdef DEBUG
-        output("Encoder Start Mean: %u, Last Encoder Position %u",
-            ss->pid_ctrl.encoder_offset, position);
-#endif
-        ss->pid_ctrl.last_phase = 0;
-        ss->pid_ctrl.last_sample_time = timer_read_time();
-        ss->pid_ctrl.error = 0;
-        ss->flags = SS_MODE_HPID;
-    }
+    ss->pid_ctrl.phase_offset = position_to_phase(ss, position);
+    ss->pid_ctrl.last_sample_time = timer_read_time();
+    ss->flags = SS_MODE_HPID;
 }
 
 static void
@@ -163,10 +110,9 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
     uint32_t time_diff = (sample_time - ss->pid_ctrl.last_sample_time)
         >> TIME_SCALE_SHIFT;
     time_diff = (time_diff == 0) ? 1 : time_diff;
-    position -= ss->pid_ctrl.encoder_offset;
-    uint32_t phase = position_to_phase(ss, position);
-    uint32_t last_phase = ss->pid_ctrl.last_phase;
-    int32_t phase_diff = phase - last_phase;
+    uint32_t phase = position_to_phase(ss, position) -
+        ss->pid_ctrl.phase_offset;
+    int32_t phase_diff = phase - ss->pid_ctrl.last_phase;
 
     // Bias the phase difference if the 24-bit phase position overflows
     int32_t bias = (phase_diff > PHASE_MAX) ? -PHASE_BIAS :
@@ -289,8 +235,7 @@ servo_stepper_set_hpid_mode(struct servo_stepper *ss, uint32_t *args)
     ss->pid_ctrl.Kp = args[4];
     ss->pid_ctrl.Ki = args[5];
     ss->pid_ctrl.Kd = args[6];
-    ss->pid_ctrl.init_count = 0;
-    ss->pid_ctrl.last_phase = PID_INIT_HOLD;
+    ss->pid_ctrl.last_phase = 0;
     ss->pid_ctrl.last_stp_pos = 0;
     ss->pid_ctrl.error = 0;
     ss->pid_ctrl.integral = 0;
