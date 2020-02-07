@@ -9,7 +9,7 @@ import bus
 import chelper
 
 UPDATE_TIME = 1. / 6000
-CALIBRATION_COUNT = 32
+CALIBRATION_COUNT = 200
 
 class error(Exception):
     pass
@@ -418,7 +418,8 @@ class MCU_spi_position:
             return params['position']
         else:
             return None
-    def apply_calibration(self, print_time, calibration):
+    def apply_calibration(self, print_time, calibration, reversed_cal):
+        calibration.append(int(reversed_cal))
         for i, cal in enumerate(calibration):
             if self.set_calibration_cmd is None:
                 self.mcu.add_config_cmd(
@@ -438,6 +439,7 @@ class ServoCalibration:
     def __init__(self, config, mcu_vstepper, servo_stepper, spi_position):
         self.printer = config.get_printer()
         self.name = config.get_name()
+        self.reversed_cal = config.getboolean('reversed_cal', False)
         self.mcu_vstepper = mcu_vstepper
         self.servo_stepper = servo_stepper
         self.spi_position = spi_position
@@ -449,65 +451,50 @@ class ServoCalibration:
                                         self.cmd_SERVO_CALIBRATE,
                                         desc=self.cmd_SERVO_CALIBRATE_help)
     def get_base_calibration(self):
-        bucket_size = 65536 // CALIBRATION_COUNT
-        return [i*bucket_size for i in range(CALIBRATION_COUNT)]
-    def calc_calibration_error(self, calibration, angles):
-        # Determine angle deviation given a calibration table
-        bucket_size = 65536 // CALIBRATION_COUNT
-        nominal_angle = 65536. / len(angles)
-        out = []
-        for step, angle in enumerate(angles):
-            angle = int(angle + .5)
-            bucket = angle // bucket_size
-            cal1 = calibration[bucket]
-            cal_diff = calibration[(bucket + 1) % CALIBRATION_COUNT] - cal1
-            cal_diff = ((cal_diff + 32768) % 65536) - 32768
-            adj = ((angle % bucket_size)*cal_diff + bucket_size//2)//bucket_size
-            out.append((cal1 + adj) - step*nominal_angle)
-        return out
-    def get_calibration(self, angles):
-        # Calculate a calibration table from a list of full-step angles
-        bucket_size = 65536 // CALIBRATION_COUNT
-        calibration = self.get_base_calibration()
-        best_error = 99999999.
-        while 1:
-            angle_errs = self.calc_calibration_error(calibration, angles)
-            total_error = sum([abs(e) for e in angle_errs])
-            if total_error >= best_error:
-                return calibration
-            buckets = {}
-            for angle, angle_err in zip(angles, angle_errs):
-                bucket = int(angle + .5) // bucket_size
-                buckets.setdefault(bucket, []).append(angle_err)
-            new_calibration = []
-            for i in range(CALIBRATION_COUNT):
-                data = buckets[i] + buckets[(i-1) % CALIBRATION_COUNT]
-                cal = calibration[i] - int(sum(data) / float(len(data)) + .5)
-                new_calibration.append(cal)
-            calibration = new_calibration
-            best_error = total_error
+        bucket_size = (65536 * 1024) // CALIBRATION_COUNT
+        return [(i * bucket_size) // 1024 for i in range(CALIBRATION_COUNT)]
+    def scale_calibration(self, cal):
+        new_cal = []
+        if len(cal) < CALIBRATION_COUNT:
+            if CALIBRATION_COUNT % len(cal):
+                # TODO: WE will have to interpolate the points
+                # As it is not an even divisor
+                raise NotImplementedError(
+                    "Extrapolation not yet implemented")
+            multiplier = CALIBRATION_COUNT // len(cal)
+            new_cal.append(cal[0])
+            for i in range(len(cal) - 1):
+                delta_cal = cal[i + 1] - cal[i]
+                for j in range(1, multiplier, 1):
+                    adj = float(j) / multiplier * delta_cal
+                    val = int(cal[i] + adj + .5)
+                    new_cal.append(val)
+                new_cal.append(cal[i + 1])
+        else:
+            if len(cal) % CALIBRATION_COUNT:
+                # TODO: WE will have to interpolate the points
+                # As it is not an even divisor
+                raise NotImplementedError(
+                    "Extrapolation not yet implemented")
+            divisor = len(cal) // CALIBRATION_COUNT
+            new_cal = [c for i, c in enumerate(cal) if not i % divisor]
+        return new_cal
     def load_calibration(self, config):
         cal = config.get('calibrate', None)
         if cal is None:
             self.reset_calibration(0.)
             return
-        reverse_cal = config.getboolean('reverse_cal', False)
         # Parse calibration data
         data = [d.strip() for d in cal.split(',')]
         angles = [float(d) for d in data if d]
-        # Calculate and apply calibration data
-        calibration = self.get_calibration(angles)
-        if reverse_cal:
-            calibration.reverse()
-        msg = "Applying Calibration to Servo [%s]:" % (self.name)
-        for i, cal in enumerate(calibration):
-            msg += "\n" if not i % 8 else " "
-            msg += "%d" % (cal)
-        logging.info(msg)
-        self.spi_position.apply_calibration(0., calibration)
+        calibration = [int(a + .5) for a in angles]
+        if len(calibration) != 200:
+            calibration = self.scale_calibration(calibration)
+        self.spi_position.apply_calibration(0., calibration, self.reversed_cal)
     def reset_calibration(self, print_time):
         bc = self.get_base_calibration()
-        self.spi_position.apply_calibration(print_time, bc)
+        self.reversed_cal = False
+        self.spi_position.apply_calibration(print_time, bc, False)
     cmd_SERVO_CALIBRATE_help = "Calibrate the servo stepper"
     def cmd_SERVO_CALIBRATE(self, params):
         self.spi_position.init_position_query(response_counter=100)
@@ -570,9 +557,9 @@ class ServoCalibration:
         for i in range(full_steps):
             inc_angles.append(angles[(i + min_step) % full_steps])
         # Correct the list if the wiring/encoder is inverted
-        reverse_cal = False
+        reversed_cal = False
         if inc_angles[1] > inc_angles[2]:
-            reverse_cal = True
+            reversed_cal = True
             inc_angles = inc_angles[1:] + inc_angles[:1]
             inc_angles.reverse()
         msg = "mechaduino calibration: Stddev=%.3f (%d of %d queries)" % (
@@ -591,7 +578,7 @@ class ServoCalibration:
         configfile = self.printer.lookup_object('configfile')
         configfile.remove_section(self.name)
         configfile.set(self.name, 'calibrate', ''.join(cal_contents))
-        configfile.set(self.name, 'reverse_cal', reverse_cal)
+        configfile.set(self.name, 'reversed_cal', reversed_cal)
         configfile.set(self.name, 'calibrate_start_step', '%d' % (min_step,))
 
 

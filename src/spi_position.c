@@ -22,11 +22,9 @@
 #define SP_CHIP_AS5047D 2
 #define SP_CHIP_MAX 2
 
-#define CALIBRATE_SHIFT 5
-#define CALIBRATE_SIZE (1 << CALIBRATE_SHIFT)
-#define CALIBRATE_MASK (CALIBRATE_SIZE - 1)
-#define CALIBRATE_HI_SHIFT (16 - CALIBRATE_SHIFT)
-#define CALIBRATE_HI_MASK ((1 << CALIBRATE_HI_SHIFT) - 1)
+#define CALIBRATE_SIZE 200
+#define LINEAR_CAL_DIST (65536 * 1024 / CALIBRATE_SIZE)
+#define CAL_MAX (CALIBRATE_SIZE - 1)
 
 struct spi_position {
     struct timer timer;
@@ -39,7 +37,7 @@ struct spi_position {
 };
 
 enum {
-    SP_PENDING = 1, SP_NEED_INIT = (1 << 1)
+    SP_PENDING = 1, SP_NEED_INIT = (1 << 1), SP_REVERSED = (1 << 2)
 };
 
 static struct task_wake spi_position_wake;
@@ -75,7 +73,7 @@ command_config_spi_position(uint32_t *args)
     sp->servo_stepper = ss;
     int i;
     for (i=0; i<CALIBRATE_SIZE; i++)
-        sp->calibration[i] = i << CALIBRATE_HI_SHIFT;
+        sp->calibration[i] = (i*LINEAR_CAL_DIST) >> 10;
     if (sp->chip_type == SP_CHIP_AS5047D)
         sp->flags |= SP_NEED_INIT;
 }
@@ -94,8 +92,17 @@ command_set_spi_position_calibration(uint32_t *args)
 {
     struct spi_position *sp = spi_position_oid_lookup(args[0]);
     uint32_t idx = args[1];
-    if (idx >= CALIBRATE_SIZE)
+    if (idx > CALIBRATE_SIZE)
         shutdown("Invalid calibration index");
+
+    if (idx == CALIBRATE_SIZE) {
+        // The value contains the reversed flag
+        if (args[2])
+            sp->flags |= SP_REVERSED;
+        else
+            sp->flags &= ~SP_REVERSED;
+        return;
+    }
     sp->calibration[idx] = args[2];
 }
 DECL_COMMAND(command_set_spi_position_calibration,
@@ -140,18 +147,49 @@ command_query_last_spi_position(uint32_t *args)
 DECL_COMMAND(command_query_last_spi_position, "query_last_spi_position oid=%c");
 
 static void
-spi_position_do_update(struct spi_position *sp, uint32_t raw_position)
+spi_position_do_update(struct spi_position *sp, uint16_t raw_position)
 {
-    // Update position with calibration data
-    uint32_t idx = raw_position >> CALIBRATE_HI_SHIFT;
-    uint32_t cal1 = sp->calibration[idx];
-    uint32_t cal2 = sp->calibration[(idx + 1) & CALIBRATE_MASK];
-    uint32_t adj = (raw_position & CALIBRATE_HI_MASK) * (int16_t)(cal2 - cal1);
-    uint32_t position = cal1 + DIV_ROUND_CLOSEST(adj, 1 << CALIBRATE_HI_SHIFT);
+    // Find the raw position's place in the calibration table
+    uint32_t lookup_value = ((uint16_t)(raw_position - sp->calibration[0])) << 10;
+    uint8_t i = lookup_value / LINEAR_CAL_DIST;
+    uint8_t i2 = (i < CAL_MAX) ? i + 1 : 0;
+    uint32_t cal1 = sp->calibration[i];
+    uint32_t cal2 = sp->calibration[i2];
+
+    // Make sure that we have correct pos index.  If i2=0 either the
+    // raw_position is lower than the first step position or higher than
+    // the last step position.  In this situation it is guaranteed that
+    // the raw_position falls between index 199 and 0, so there is no
+    // need to check for under/overshoot.
+    if (raw_position < cal1 && i2) {
+        i = (i > 0) ? i - 1 : CAL_MAX;
+        cal2 = cal1;
+        cal1 = sp->calibration[i];
+    } else if (raw_position > cal2 && i2) {
+        i = i2;
+        cal1 = cal2;
+        cal2 = sp->calibration[(i2 < CAL_MAX) ? i2 + 1 : 0];
+    }
+
+    // Linear interpolate
+    uint16_t lin_cal1 = (LINEAR_CAL_DIST * i) >> 10;
+    uint16_t lin_cal2 = (LINEAR_CAL_DIST * (i + 1)) >> 10;
+    uint16_t delta_lin = lin_cal2 - lin_cal1;
+    uint16_t delta_cal = cal2 - cal1;
+    uint16_t delta_raw = raw_position - cal1;
+
+    uint32_t position = (uint16_t)(lin_cal1 + DIV_ROUND_CLOSEST(
+        (delta_raw * delta_lin), delta_cal));
 
     // Update position to include rotation count
     uint32_t old_position = sp->position;
-    uint32_t new_position = old_position + (int16_t)(position - old_position);
+    uint32_t new_position = old_position;
+
+    if (sp->flags & SP_REVERSED)
+        new_position -= (int16_t)(position + old_position);
+    else
+        new_position += (int16_t)(position - old_position);
+
     sp->position = new_position;
 
     // Update servo_stepper code with new reading
