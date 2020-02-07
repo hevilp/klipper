@@ -19,6 +19,8 @@
     (((val) > (max)) ? (max) : (val)))
 #define ABS(val) (((val) < 0) ? -(val) : (val))
 
+#define PID_HOLD_DELAY 10
+#define PID_INIT_COUNT 10
 #define PID_SCALE_DIVISOR 1024
 // TODO:  TIME_SCALE_SHIFT should be calculated based on the clock frequency
 // To get the expected number of nano seconds it takes to run the loop at 6KHz:
@@ -97,9 +99,53 @@ servo_stepper_mode_torque_update(struct servo_stepper *ss, uint32_t position)
 static void
 servo_stepper_mode_pid_init(struct servo_stepper *ss, uint32_t position)
 {
-    ss->pid_ctrl.phase_offset = position_to_phase(ss, position);
-    ss->pid_ctrl.last_sample_time = timer_read_time();
-    ss->flags = SS_MODE_HPID;
+    // To save memory, members of the pid_control struct will be reused
+    // for initialization:
+    // last_sample_time - hold delay counter
+    // last_phase - init counter
+    // phase_offset - used to track the running average
+
+    if (ss->pid_ctrl.last_sample_time) {
+        // Apply maximum availiable current to hold at first step
+        if (ss->pid_ctrl.last_sample_time == (PID_HOLD_DELAY - 2))
+            a4954_hold(ss->stepper_driver, ss->run_current_scale);
+
+        ss->pid_ctrl.last_sample_time--;
+        return;
+    }
+
+    if (ss->pid_ctrl.last_phase == 0) {
+        ss->pid_ctrl.phase_offset = position;
+    } else {
+         // calculate the moving average
+        uint32_t last_avg = ss->pid_ctrl.phase_offset;
+        uint32_t pos_diff = position - last_avg;
+        uint8_t is_negative = 0;
+        if (pos_diff & 0x80000000) {
+            pos_diff = -pos_diff;
+            is_negative = 1;
+        }
+        // check encoder varaince
+        if (pos_diff > FULL_STEP)
+            shutdown("Encoder Variance too large!  Check your calibration"
+                " and magnet position.");
+
+        pos_diff = DIV_ROUND_CLOSEST(pos_diff, ss->pid_ctrl.last_phase + 1);
+        if (is_negative)
+            ss->pid_ctrl.phase_offset -= pos_diff;
+        else
+            ss->pid_ctrl.phase_offset += pos_diff;
+    }
+
+    ss->pid_ctrl.last_phase++;
+
+    if (ss->pid_ctrl.last_phase == PID_INIT_COUNT) {
+        uint32_t avg_enc_pos = ss->pid_ctrl.phase_offset;
+        ss->pid_ctrl.phase_offset = position_to_phase(ss, avg_enc_pos);
+        ss->pid_ctrl.last_phase = 0;
+        ss->pid_ctrl.last_sample_time = timer_read_time();
+        ss->flags = SS_MODE_HPID;
+    }
 }
 
 static void
@@ -145,7 +191,6 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
         ss->hold_current_scale)) / FULL_STEP) + ss->hold_current_scale;
 
     a4954_set_phase(ss->stepper_driver, phase + error, cur_scale);
-
 
 #ifdef DEBUG
     if (ss->pid_ctrl.query_flag) {
@@ -244,6 +289,7 @@ servo_stepper_set_hpid_mode(struct servo_stepper *ss, uint32_t *args)
     ss->pid_ctrl.last_stp_pos = 0;
     ss->pid_ctrl.error = 0;
     ss->pid_ctrl.integral = 0;
+    ss->pid_ctrl.last_sample_time = PID_HOLD_DELAY;
     ss->flags = SS_MODE_PID_INIT;
     irq_enable();
 }
