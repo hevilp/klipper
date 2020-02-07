@@ -144,11 +144,7 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
     uint32_t cur_scale = ((ABS(co) * (ss->run_current_scale -
         ss->hold_current_scale)) / FULL_STEP) + ss->hold_current_scale;
 
-    // If the error is within a 1/2 step, move to the next commanded position
-    // as if in open_loop mode.  Otherwise move relative to the encoder position.
-    uint32_t next_phase = (ABS(ss->pid_ctrl.error) > 128) ?
-        (phase + error) : stp_pos;
-    a4954_set_phase(ss->stepper_driver, next_phase, cur_scale);
+    a4954_set_phase(ss->stepper_driver, phase + error, cur_scale);
 
 
 #ifdef DEBUG
