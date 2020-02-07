@@ -18,6 +18,11 @@
 #include "servo_stepper.h" // servo_stepper_oid_lookup
 #include "spicmds.h" // spidev_transfer
 
+#define PROFILE
+#ifdef PROFILE
+#include "board/misc.h" // timer_read_time
+#endif
+
 #define SP_CHIP_A1333 1
 #define SP_CHIP_AS5047D 2
 #define SP_CHIP_MAX 2
@@ -34,6 +39,10 @@ struct spi_position {
     struct servo_stepper *servo_stepper;
     uint8_t chip_type, flags;
     uint16_t calibration[CALIBRATE_SIZE];
+
+#ifdef PROFILE
+    uint32_t last_interp_time;
+#endif
 };
 
 enum {
@@ -140,15 +149,27 @@ command_query_last_spi_position(uint32_t *args)
     irq_disable();
     uint32_t next_clock = sp->timer.waketime;
     uint32_t position = spi_position_get_position(sp);
+#ifdef PROFILE
+    uint32_t interp_ticks = sp->last_interp_time;
+#endif
     irq_enable();
+#ifdef PROFILE
+    sendf("spi_position_result oid=%c next_clock=%u position=%u"
+          " interp_ticks=%u", oid, next_clock, position, interp_ticks);
+#else
     sendf("spi_position_result oid=%c next_clock=%u position=%u",
           oid, next_clock, position);
+#endif
 }
 DECL_COMMAND(command_query_last_spi_position, "query_last_spi_position oid=%c");
 
 static void
 spi_position_do_update(struct spi_position *sp, uint16_t raw_position)
 {
+#ifdef PROFILE
+    uint32_t interp_time = timer_read_time();
+#endif
+
     // Find the raw position's place in the calibration table
     uint32_t lookup_value = ((uint16_t)(raw_position - sp->calibration[0])) << 10;
     uint8_t i = lookup_value / LINEAR_CAL_DIST;
@@ -191,6 +212,10 @@ spi_position_do_update(struct spi_position *sp, uint16_t raw_position)
         new_position += (int16_t)(position - old_position);
 
     sp->position = new_position;
+
+#ifdef PROFILE
+    sp->last_interp_time = timer_read_time() - interp_time;
+#endif
 
     // Update servo_stepper code with new reading
     irq_disable();

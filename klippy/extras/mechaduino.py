@@ -221,6 +221,7 @@ class MCU_servo_stepper:
         self.mcu = stepper_driver.get_mcu()
         self.stepper_driver = stepper_driver
         self.oid = self.mcu.create_oid()
+        self.mcu_freq = None
         modes = {'open_loop': 'open_loop', 'hpid': 'hpid'}
         self.servo_mode = config.getchoice('mode', modes, 'open_loop')
         steps = {'256': 0, '128': 1, '64': 2, '32': 3, '16': 4,
@@ -245,6 +246,7 @@ class MCU_servo_stepper:
     def get_full_steps_per_rotation(self):
         return self.full_steps_per_rotation
     def _build_config(self):
+        self.mcu_freq = self.mcu.get_constant_float('CLOCK_FREQ')
         cmd_queue = self.mcu.alloc_command_queue()
         self.set_mode_cmd = self.mcu.lookup_command(
             "servo_stepper_set_mode oid=%c mode=%c run_current_scale=%u"
@@ -289,7 +291,7 @@ class MCU_servo_stepper:
     def get_servo_stats(self):
         params = self.get_stats_cmd.send_with_response(
             [self.oid], response='servo_stepper_stats', response_oid=self.oid)
-        return (params['error'], params['max_time'])
+        return (params['error'], params.get('max_time'))
 
 
 AS5047_REGS = {
@@ -415,7 +417,7 @@ class MCU_spi_position:
         params = self.query_pos_cmd.send_with_response(
             [self.oid], response='spi_position_result', response_oid=self.oid)
         if params is not None:
-            return params['position']
+            return (params['position'], params.get('interp_ticks'))
         else:
             return None
     def apply_calibration(self, print_time, calibration, reversed_cal):
@@ -612,9 +614,9 @@ class PrinterMechaduino:
 
         # XXX - Temp commands for Testing, Will Remove
         self.gcode.register_mux_command(
-            "GET_SERVO_POSITION", "SERVO", servo_name,
-            self.cmd_GET_SERVO_POSITION,
-            desc=self.cmd_GET_SERVO_POSITION_help)
+            "GET_SERVO_STATS", "SERVO", servo_name,
+            self.cmd_GET_SERVO_STATS,
+            desc=self.cmd_GET_SERVO_STATS_help)
         self.gcode.register_mux_command(
             "SERVO_ENABLE", "SERVO", servo_name,
             self.cmd_SERVO_ENABLE,
@@ -639,17 +641,21 @@ class PrinterMechaduino:
             self.servo_stepper.set_disabled(print_time)
         else:
             self.servo_stepper.set_torque_mode(print_time, excite, current)
-    cmd_GET_SERVO_POSITION_help = "Get Stepper and Encoder Position of Servo"
-    def cmd_GET_SERVO_POSITION(self, params):
+    cmd_GET_SERVO_STATS_help = "Retreive various sevo stepper statistics"
+    def cmd_GET_SERVO_STATS(self, params):
         realtime_pos = self.mcu_vstepper.get_realtime_position()
-        enc_pos = self.spi_position.get_position()
-        servo_stats = self.servo_stepper.get_servo_stats()
-        self.gcode.respond_info(
-            "Stepper Position: %d\n"
-            "Encoder Position: %d\n"
-            "Servo Error: %d\n"
-            "Max PID Loop Time: %d clock ticks" %
-            (realtime_pos, enc_pos, servo_stats[0], servo_stats[1]))
+        enc_pos, intp_ticks = self.spi_position.get_position()
+        servo_err, pid_ticks = self.servo_stepper.get_servo_stats()
+        msg = "Stepper Position: %d\nEncoder Position: %d\nServo Error: %d" % \
+              (realtime_pos, enc_pos, servo_err)
+        clock_mhz = self.servo_stepper.mcu_freq / 1000000.
+        if intp_ticks is not None:
+            intp_us = intp_ticks / clock_mhz
+            msg += "\nLast Interpolation Time: %.2f us" % (intp_us)
+        if pid_ticks is not None:
+            pid_us = pid_ticks / clock_mhz
+            msg += "\nMax PID Loop Time: %.2f us" % (pid_us)
+        self.gcode.respond_info(msg)
     cmd_SERVO_ENABLE_help = "Manually Enable Servo Stepper"
     def cmd_SERVO_ENABLE(self, params):
         toolhead = self.printer.lookup_object('toolhead')

@@ -34,6 +34,7 @@
 // potential be a bad encoder reading)
 #define PHASE_MAX 51200
 
+#define PROFILE
 //#define DEBUG
 
 struct pid_control {
@@ -45,7 +46,9 @@ struct pid_control {
     uint32_t last_stp_pos;
     uint32_t last_sample_time;
 
+#ifdef PROFILE
     uint32_t max_loop_time;
+#endif
 #ifdef DEBUG
     uint8_t query_flag;
 #endif
@@ -165,16 +168,22 @@ void
 servo_stepper_update(struct servo_stepper *ss, uint32_t position)
 {
     uint32_t mode = ss->flags;
+#ifdef PROFILE
     uint32_t pid_time;
+#endif
     switch (mode) {
     case SS_MODE_OPEN_LOOP: servo_stepper_mode_open_loop(ss, position); break;
     case SS_MODE_TORQUE: servo_stepper_mode_torque_update(ss, position); break;
     case SS_MODE_HPID:
+#ifdef PROFILE
         pid_time = timer_read_time();
+#endif
         servo_stepper_mode_hpid_update(ss, position);
+#ifdef PROFILE
         pid_time = timer_read_time() - pid_time;
         if (pid_time > ss->pid_ctrl.max_loop_time)
             ss->pid_ctrl.max_loop_time = pid_time;
+#endif
         break;
     case SS_MODE_PID_INIT: servo_stepper_mode_pid_init(ss, position); break;
     }
@@ -289,13 +298,19 @@ command_servo_stepper_get_stats(uint32_t *args)
     struct servo_stepper *ss = servo_stepper_oid_lookup(oid);
     irq_disable();
     int32_t err = ss->pid_ctrl.error;
+#ifdef PROFILE
     uint32_t max_time = ss->pid_ctrl.max_loop_time;
+#endif
 #ifdef DEBUG
     ss->pid_ctrl.query_flag = 1;
 #endif
     irq_enable();
+#ifdef PROFILE
     sendf("servo_stepper_stats oid=%c error=%i max_time=%u",
           oid, err, max_time);
+#else
+    sendf("servo_stepper_stats oid=%c error=%i", oid, err);
+#endif
 
 }
 DECL_COMMAND(command_servo_stepper_get_stats,
