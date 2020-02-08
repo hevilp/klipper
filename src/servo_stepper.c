@@ -19,8 +19,8 @@
     (((val) > (max)) ? (max) : (val)))
 #define ABS(val) (((val) < 0) ? -(val) : (val))
 
-#define PID_HOLD_DELAY 10
-#define PID_INIT_COUNT 10
+#define PID_HOLD_DELAY 200
+#define PID_INIT_COUNT 20
 #define PID_SCALE_DIVISOR 1024
 // TODO:  TIME_SCALE_SHIFT should be calculated based on the clock frequency
 // To get the expected number of nano seconds it takes to run the loop at 6KHz:
@@ -142,6 +142,12 @@ servo_stepper_mode_pid_init(struct servo_stepper *ss, uint32_t position)
     if (ss->pid_ctrl.last_phase == PID_INIT_COUNT) {
         uint32_t avg_enc_pos = ss->pid_ctrl.phase_offset;
         ss->pid_ctrl.phase_offset = position_to_phase(ss, avg_enc_pos);
+        // retreiving the stepper position here will result in ignoring
+        // movement that was scheduled after being enabled, however
+        // it prevents a large initial "jump" due to a build up of
+        // scheduled steps
+        ss->pid_ctrl.last_stp_pos = virtual_stepper_get_position(
+            ss->virtual_stepper);
         ss->pid_ctrl.last_phase = 0;
         ss->pid_ctrl.last_sample_time = timer_read_time();
         ss->flags = SS_MODE_HPID;
@@ -168,9 +174,9 @@ servo_stepper_mode_hpid_update(struct servo_stepper *ss, uint32_t position)
         ((phase_diff < -PHASE_MAX) ? PHASE_BIAS : 0);
     phase_diff += bias;
 
-    uint32_t stp_pos = virtual_stepper_get_position(ss->virtual_stepper) *
-         ss->step_multiplier;
-    int32_t move_diff = stp_pos - ss->pid_ctrl.last_stp_pos;
+    uint32_t stp_pos = virtual_stepper_get_position(ss->virtual_stepper);
+    int32_t move_diff = (stp_pos - ss->pid_ctrl.last_stp_pos)
+        * ss->step_multiplier;
     ss->pid_ctrl.error += move_diff - phase_diff;
 
     // Constrain the error to a full step
@@ -280,7 +286,6 @@ servo_stepper_set_hpid_mode(struct servo_stepper *ss, uint32_t *args)
     irq_disable();
     ss->run_current_scale = args[2];
     ss->hold_current_scale = args[3];
-    virtual_stepper_set_position(ss->virtual_stepper, 0);
     a4954_reset(ss->stepper_driver);
     ss->pid_ctrl.Kp = args[4];
     ss->pid_ctrl.Ki = args[5];
