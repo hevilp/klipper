@@ -617,10 +617,7 @@ class PrinterMechaduino:
             "GET_SERVO_STATS", "SERVO", servo_name,
             self.cmd_GET_SERVO_STATS,
             desc=self.cmd_GET_SERVO_STATS_help)
-        self.gcode.register_mux_command(
-            "SERVO_ENABLE", "SERVO", servo_name,
-            self.cmd_SERVO_ENABLE,
-            desc=self.cmd_SERVO_ENABLE_help)
+
     def get_mcu_stepper(self):
         return self.mcu_vstepper
     def set_enable(self, print_time):
@@ -656,16 +653,6 @@ class PrinterMechaduino:
             pid_us = pid_ticks / clock_mhz
             msg += "\nMax PID Loop Time: %.2f us" % (pid_us)
         self.gcode.respond_info(msg)
-    cmd_SERVO_ENABLE_help = "Manually Enable Servo Stepper"
-    def cmd_SERVO_ENABLE(self, params):
-        toolhead = self.printer.lookup_object('toolhead')
-        print_time = toolhead.get_last_move_time()
-        stepper_enable = self.printer.lookup_object('stepper_enable')
-        se = stepper_enable.lookup_enable(self.mcu_vstepper.get_name())
-        if self.gcode.get_int('ENABLE', params, 1):
-            se.motor_enable(print_time)
-        else:
-            se.motor_disable(print_time)
 
 def load_config_prefix(config):
     return PrinterMechaduino(config)
