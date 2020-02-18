@@ -35,7 +35,7 @@ struct gpio_dac gpio_dac_setup(uint32_t pin)
     dac->CR &= ~(0xffff << (16 * chan));
 
     // Single DAC mode with SW trigger
-    dac->CR |= (0xF << 2) << (16 * chan);
+    //dac->CR |= (0xF << 2) << (16 * chan);
     dac->CR |= 1 << (16 * chan);
 
 
@@ -45,7 +45,7 @@ struct gpio_dac gpio_dac_setup(uint32_t pin)
     return (struct gpio_dac){ .dac = dac, .chan = chan };
 }
 
-void gpio_dac_write(struct gpio_dac g, uint16_t data)
+void gpio_dac_write(struct gpio_dac g, uint32_t data)
 {
     DAC_TypeDef *dac = g.dac;
     switch (g.chan) {
@@ -62,10 +62,27 @@ void gpio_dac_write(struct gpio_dac g, uint16_t data)
 }
 
 void
-gpio_dual_dac_write(struct gpio_dac g, uint16_t dac1_data, uint16_t dac2_data)
+gpio_dual_dac_write(struct gpio_dac g, uint32_t data1, uint32_t data2)
 {
     DAC_TypeDef *dac = g.dac;
-    dac->DHR12R1 = dac1_data & 0xFFF;
-    dac->DHR12R2 = dac2_data & 0xFFF;
-    dac->SWTRIGR = 0x3;
+    uint32_t data = g.chan ? ((data1 & 0xFFF) << 16) | (data2 & 0xFFF)
+        : ((data2 & 0xFFF) << 16) | (data1 & 0xFFF);
+    dac->DHR12RD = data;
+}
+
+void
+gpio_dac_wait(struct gpio_dac g, uint32_t data)
+{
+    DAC_TypeDef *dac = g.dac;
+    data &= 0xFFF;
+    switch (g.chan) {
+    case 0:
+        while(dac->DOR1 != data);
+        break;
+    case 1:
+        while(dac->DOR2 != data);
+        break;
+    default:
+        break;
+    }
 }

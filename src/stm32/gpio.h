@@ -35,9 +35,10 @@ struct gpio_dac {
     uint32_t chan;
 };
 struct gpio_dac gpio_dac_setup(uint32_t pin);
-void gpio_dac_write(struct gpio_dac g, uint16_t data);
-void gpio_dual_dac_write(struct gpio_dac g, uint16_t dac1_data,
-                         uint16_t dac2_data);
+void gpio_dac_write(struct gpio_dac g, uint32_t data);
+void gpio_dual_dac_write(struct gpio_dac g, uint32_t dac1_data,
+                         uint32_t dac2_data);
+void gpio_dac_wait(struct gpio_dac g, uint32_t data);
 
 struct spi_config {
     void *spi;
