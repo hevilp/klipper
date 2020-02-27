@@ -3,7 +3,7 @@
 # Copyright (C) 2016-2019  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import os, re, logging, collections, shlex
+import os, re, logging, collections, shlex, termios
 import homing
 
 # Parse and handle G-Code commands
@@ -326,8 +326,12 @@ class GCodeParser:
                 os.write(self.fd, "ok %s\n" % (msg,))
             else:
                 os.write(self.fd, "ok\n")
-        except os.error:
-            logging.exception("Write g-code ack")
+        except os.error as e:
+            if e.errno == 11:
+                termios.tcflush(self.fd, termios.TCOFLUSH)
+                logging.info("gcode: Write gcode ack flushed")
+            else:
+                logging.exception("Write g-code ack")
         self.need_ack = False
     def respond(self, msg):
         if self.is_fileinput:
@@ -335,8 +339,12 @@ class GCodeParser:
         self.printer.send_event("gcode:respond", msg)
         try:
             os.write(self.fd, msg+"\n")
-        except os.error:
-            logging.exception("Write g-code response")
+        except os.error as e:
+            if e.errno == 11:
+                termios.tcflush(self.fd, termios.TCOFLUSH)
+                logging.info("gcode: Write gcode response flushed")
+            else:
+                logging.exception("Write g-code response")
     def respond_info(self, msg, log=True):
         if log:
             logging.info(msg)
