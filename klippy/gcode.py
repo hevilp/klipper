@@ -10,7 +10,7 @@ import homing
 class GCodeParser:
     error = homing.CommandError
     RETRY_TIME = 0.100
-    def __init__(self, printer, fd):
+    def __init__(self, printer, fd, webhooks):
         self.printer = printer
         self.fd = fd
         printer.register_event_handler("klippy:ready", self._handle_ready)
@@ -31,6 +31,10 @@ class GCodeParser:
         self.pending_commands = []
         self.bytes_read = 0
         self.input_log = collections.deque([], 50)
+        # Register G-Code Endpoint
+        webhooks.register_endpoint(
+            '/printer/gcode', self.run_script_from_remote,
+            methods=['POST'])
         # Command handling
         self.is_printer_ready = False
         self.mutex = self.reactor.mutex()
@@ -293,6 +297,15 @@ class GCodeParser:
         if self.fd_handle is None:
             self.fd_handle = self.reactor.register_fd(self.fd,
                                                       self._process_data)
+    def run_script_from_remote(self, web_request):
+        script = web_request.get('script')
+        if 'M112' in script.upper():
+            self.cmd_M112({})
+            return
+        try:
+            self.run_script(script)
+        except Exception as e:
+            raise web_request.error(e.message, 400)
     def run_script_from_command(self, script):
         prev_need_ack = self.need_ack
         try:
