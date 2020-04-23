@@ -136,6 +136,10 @@ class Printer:
         config = pconfig.read_main_config()
         if self.bglogger is not None:
             pconfig.log_config(config)
+        # Attempt to bring up API server first if configured.  Allows clients
+        # access to config and restart endpoints if there is a config error
+        if config.has_section('remote_api'):
+            self.try_load_module(config, 'remote_api')
         # Create printer components
         for m in [pins, heater, mcu]:
             m.add_printer_objects(config)
@@ -143,8 +147,6 @@ class Printer:
             self.try_load_module(config, section_config.get_name())
         for m in [toolhead]:
             m.add_printer_objects(config)
-        # send post config event prior to checks
-        self.send_event("klippy:post_config")
         # Validate that there are no undefined parameters in the config file
         pconfig.check_unused_options(config)
     def _handle_web_request(self, web_request):
@@ -152,10 +154,14 @@ class Printer:
         if path == '/printer/info':
             version = self.start_args['software_version']
             cpu_info = self.start_args['cpu_info']
+            error = self.state_message != message_startup and \
+                self.state_message != message_ready
             web_request.send(
                 {'cpu': cpu_info, 'version': version,
                  'hostname': socket.gethostname(),
-                 'is_ready': self.state_message == message_ready})
+                 'is_ready': self.state_message == message_ready,
+                 'error_detected': error,
+                 'message': self.state_message})
         elif path == '/printer/restart':
             self.request_exit('restart')
         elif path == '/printer/firmware_restart':
