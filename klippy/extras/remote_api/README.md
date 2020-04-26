@@ -72,6 +72,7 @@ printer.cfg:
 port: 7000
 trusted_clients:
  192.168.1.0/24
+ 127.0.0.1
 ```
 
 Below is a detailed explanation of all options currently available:
